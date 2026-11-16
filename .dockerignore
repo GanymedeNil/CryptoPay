@@ -1,0 +1,17 @@
+# Images are built from ./backend and ./web (each has its own .dockerignore);
+# this file keeps an accidental `docker build .` at the repository root small
+# and free of secrets.
+.git/
+.env
+.env.*
+!.env.example
+**/node_modules/
+**/.next/
+**/*.tsbuildinfo
+backend/bin/
+**/*.test
+**/*.out
+**/coverage*
+.DS_Store
+.idea/
+.vscode/

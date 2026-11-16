@@ -1,0 +1,68 @@
+# Runs every test suite inside containers (no local Go / Node needed).
+#
+#   make test            # backend + web
+#   make test-backend    # docker compose -f docker-compose.test.yml run --rm --build backend-test
+#   make test-web        # docker compose -f docker-compose.test.yml run --rm --build web-test
+#   make test-live       # opt-in: real public RPC endpoints (network-dependent, rate limited)
+#
+# `docker compose run` starts the dependencies (postgres), waits until they
+# are healthy and exits with the status of the test command, so failures
+# propagate to make / CI. `make` tears the stack down afterwards.
+
+name: cryptopay-test
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: cryptopay_test
+    # Throw-away data, tuned for speed; tests create one schema per test.
+    tmpfs:
+      - /var/lib/postgresql/data
+    command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off", "-c", "max_connections=400"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d cryptopay_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # go vet + go test -race over every backend package (PostgreSQL tests included).
+  backend-test:
+    build:
+      context: ./backend
+      target: test
+      # docs/api.md for the contract tests (Dockerfile stage "docs").
+      additional_contexts:
+        docs: ./docs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TEST_DATABASE_URL: postgres://postgres:postgres@postgres:5432/cryptopay_test?sslmode=disable
+    volumes:
+      - go-build-cache:/root/.cache/go-build
+
+  # pnpm lint && pnpm typecheck && pnpm test (vitest)
+  web-test:
+    build:
+      context: ./web
+      target: test
+
+  # Opt-in live tests of the chain adapters against FREE PUBLIC RPC endpoints.
+  # Network-dependent and rate limited by the providers: failures can be
+  # transient. Not part of `make test`.
+  backend-live:
+    profiles: ["live"]
+    build:
+      context: ./backend
+      target: test
+      additional_contexts:
+        docs: ./docs
+    command: ["go", "test", "-tags", "live", "-count=1", "-v", "./internal/chain/..."]
+    volumes:
+      - go-build-cache:/root/.cache/go-build
+
+volumes:
+  go-build-cache:

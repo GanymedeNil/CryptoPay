@@ -1,0 +1,21 @@
+# Dependencies and build output are produced inside the image.
+node_modules/
+.next/
+out/
+build/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+.pnp
+.pnp.*
+# Secrets / local env (the image is configured at runtime).
+.env
+.env.*
+!.env.example
+# Misc
+.DS_Store
+.vercel
+npm-debug.log*
+.pnpm-debug.log*
+Dockerfile
+.dockerignore

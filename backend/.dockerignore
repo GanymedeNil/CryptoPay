@@ -1,0 +1,12 @@
+# Keep the build context small and free of local artefacts / secrets.
+bin/
+*.test
+*.out
+coverage.*
+.env
+.env.*
+.DS_Store
+.idea/
+.vscode/
+Dockerfile
+.dockerignore
