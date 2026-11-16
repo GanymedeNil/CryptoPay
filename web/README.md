@@ -2,7 +2,7 @@
 
 Next.js frontend of the CryptoPay gateway: the shared foundation (typed API
 client, i18n, theme, UI kit, money utilities), the customer checkout at
-`/pay/[id]`, and — next — the admin console under `/admin`.
+`/pay/[id]`, and the admin console under `/admin`.
 
 The HTTP contract is [`../docs/api.md`](../docs/api.md); architecture and
 invoice lifecycle are in [`../docs/architecture.md`](../docs/architecture.md).
@@ -15,6 +15,7 @@ pnpm install
 # Without the Go backend: start the mock API, then the app against it
 pnpm mock                                   # http://localhost:8787/mock lists every scenario
 BACKEND_URL=http://localhost:8787 pnpm dev  # http://localhost:3000/pay/22222222-2222-4222-8222-222222222222
+                                            # http://localhost:3000/admin (mock accounts below)
 
 # With the Go backend on :8080 (the default)
 pnpm dev
@@ -27,12 +28,12 @@ pnpm dev
 | `pnpm lint` | ESLint (next core-web-vitals + TypeScript) |
 | `pnpm typecheck` | `next typegen` + `tsc --noEmit` (strict) |
 | `pnpm test` | Vitest + React Testing Library, single run (CI) — `pnpm test:watch` to watch |
-| `pnpm mock` | dependency-free mock of the checkout API (`mock/server.mjs`) |
+| `pnpm mock` | dependency-free mock of the checkout + admin API (`mock/server.mjs`, `mock/admin.mjs`) |
 
 Stack: Next.js 16 (App Router, `src/`, Cache Components + Partial
 Prefetching on), React 19, TypeScript strict, Tailwind CSS 4, shadcn/ui
-(`radix-nova` style, lucide icons), next-themes, Vitest 5, pnpm, Node ≥ 20.9
-(developed on Node 24).
+(`radix-nova` style, lucide icons), next-themes, TanStack Query 5 and
+recharts 3 (admin), Vitest 5, pnpm, Node ≥ 20.9 (developed on Node 24).
 
 ## Environment
 
@@ -58,30 +59,36 @@ See `.env.example`.
 ## Layout
 
 ```
-mock/server.mjs              mock checkout API (node:http, no deps)
+mock/server.mjs              mock checkout API (node:http, no deps) + mounts mock/admin.mjs
+mock/admin.mjs               in-memory Admin API (sessions, roles, seeded data)
 src/
   app/
     layout.tsx               fonts, theme provider, <Suspense> + locale cookie → I18nProvider
     globals.css              design tokens (light/dark), Tailwind theme mapping
     page.tsx                 landing (/)
     pay/[id]/page.tsx        checkout route (Suspense shell + client CheckoutPage)
+    admin/                   admin console (see "Admin console" below)
     icon.svg
   proxy.ts                   runtime BACKEND_URL override for /api/* and /healthz
   components/
     ui/                      shadcn/ui components (generated; edit freely)
     brand/                   BrandMark, Guilloche (security-print pattern)
     checkout/                checkout page: screens, polling hook, wallet panel, QR …
+    admin/                   admin console: building blocks + one folder per page
     site-header.tsx          brand + LocaleSwitcher + ThemeToggle
     locale-switcher.tsx, theme-toggle.tsx, providers.tsx, landing.tsx
-  hooks/                     useNow, useIsMobile, useCopy
+  hooks/                     useNow, useIsMobile (UA), use-mobile (viewport < 768 px), useCopy
   lib/
     api/                     types.ts (docs/api.md verbatim), client.ts, checkout.ts, admin.ts, merchant.ts
     i18n/                    config, dictionaries/{zh,en}.ts, provider (useT/useLocale), server (getServerT)
-    format/                  amount.ts (BigInt decimals), address.ts, countdown.ts, date.ts
+    format/                  amount.ts (BigInt decimals), address.ts, countdown.ts, date.ts,
+                             relative.ts (relative time, date inputs), units.ts (bps↔%, durations)
     checkout/                pure checkout logic: state machine, payment amounts/URIs, asset grouping
+    admin/                   admin data layer (TanStack Query keys/hooks), errors, URL state, roles,
+                             settings-form conversions, timeline, explorer links, wallet-input checks
     wallets/                 wallet adapters per family (evm, tron, solana, bitcoin), deep links, detection
     explorer.ts, clipboard.ts, device.ts, env.ts, browser.ts, utils.ts (cn)
-  test/                      setup, renderWithProviders, fixtures
+  test/                      setup, renderWithProviders, fixtures, admin.tsx (renderAdmin + admin fixtures)
 ```
 
 ## Conventions (read this before building `/admin`)
@@ -141,9 +148,12 @@ and ratios (`conversion_rate`, `confirmations`) are plain numbers.
   badge, dialog, alert-dialog, dropdown-menu, select, tabs, tooltip, skeleton,
   sonner, separator, alert, table, sheet, switch, textarea, field,
   input-group, checkbox, radio-group, popover, progress, scroll-area,
-  pagination, avatar, spinner, empty, toggle, toggle-group). Add more with
-  `pnpm dlx shadcn@4.23.0 add <name>` (e.g. `sidebar`, `breadcrumb`,
-  `command`, `calendar`, `chart`).
+  pagination, avatar, spinner, empty, toggle, toggle-group, sidebar,
+  breadcrumb, chart, collapsible). Add more with
+  `pnpm dlx shadcn@4.23.0 add <name>` (e.g. `command`, `calendar`).
+  Local edits: `sidebar.tsx` omits `data-active` when inactive (the
+  `data-active:` variant matches presence) and takes `mobileTitle` /
+  `mobileDescription` for the phone sheet.
 * Forms: shadcn v4 replaced the old `form` component with `field`; use
   `Field`/`FieldLabel`/`FieldError` with `react-hook-form` + `zod` +
   `@hookform/resolvers` (installed).
@@ -183,6 +193,70 @@ locale })` wraps i18n + tooltip providers; `src/test/fixtures.ts` builds API
 objects. `vi.useFakeTimers()` works with RTL/user-event (setup shims Jest's
 timer API). Files needing Node's `Buffer`/crypto (Solana) use
 `// @vitest-environment node`. `next/navigation` is mocked globally.
+
+## Admin console (`/admin`)
+
+Everything is client-rendered after `GET /api/admin/auth/me` (the session
+cookie is HttpOnly and belongs to the API behind the `/api` proxy), so each
+admin route exports `instant = false` and a localized `generateMetadata`
+title (`src/lib/admin/metadata.ts`).
+
+| Route | |
+|---|---|
+| `/admin/login` | email + password, 401 / 429 / network messages, `?next=` (console paths only) and `?reason=expired\|signedOut` |
+| `/admin` | overview: 7/30/90-day range (`?days=`), KPIs, needs-attention (unmatched transfers, failed webhooks → filtered lists), daily volume + invoices chart (recharts via shadcn `chart`), by asset, by status, chain-monitoring strip |
+| `/admin/invoices` | filters in the URL (`status`, `merchant_id`, `q`, `from`, `to`, `page`, `page_size`), create-invoice dialog → checkout link with copy / open |
+| `/admin/invoices/[id]` | summary, timeline (rebuilt from quotes / transfers / webhook events), quotes, transfers, webhook events (payload + retry), cancel, mark paid (note required); refreshes every 10 s while open |
+| `/admin/transfers` | `chain_id`, `status`, `matched`, `q`; unmatched → assign dialog (paste id or checkout link, invoice preview, asset compatibility check) |
+| `/admin/webhooks` | `status`, `merchant_id`, `invoice_id`; expandable rows (payload, last error / response), retry |
+| `/admin/merchants`, `/admin/merchants/[id]` | search, create (webhook secret shown once), profile (name / status / webhook URL), API keys (create → key once, revoke), rotate secret, integration snippet (curl + Node.js / Python signature check) |
+| `/admin/chains` | grouped mainnet / testnet: enable (optimistic), payable + reasons, scanner state, RPC editor (masked list, replace / reset, per-URL test), default-RPC warning on mainnets, scan parameters, receiving wallet (same family only) |
+| `/admin/assets` | grouped by chain: enable (optimistic), edit precision / order / rate key / name, add custom token |
+| `/admin/wallets` | list, 3-step wizard (type → key + `POST /wallets/preview` + "I checked" → name) with the "never paste a private key" notice and local secret detection, rename, delete (409 explained) |
+| `/admin/settings` | every `Settings` field in operator units (minutes / hours, %), validation, sticky save bar |
+| `/admin/users` | owner only (hidden from the nav otherwise): create (random password generator), role, (de)activate, reset password, delete, "last owner" errors |
+| `/admin/audit-logs` | `action`, `actor` filters, expandable detail JSON, links to the target |
+
+**Roles.** `useAuth()` gives `{ user, canWrite, isOwner }`. Mutating controls
+use `GatedButton` / `RoleTooltip`: disabled for viewers with a tooltip saying
+why (forms render as disabled fieldsets, a read-only banner sits under the
+header). A 401 anywhere fires `UNAUTHORIZED_EVENT` (query / mutation cache)
+and `AuthGate` sends the user to `/admin/login?next=…&reason=expired`; 403
+renders a "no access" state.
+
+**Data layer** (`src/lib/admin/queries.ts`, TanStack Query 5): `adminKeys`
+(everything under `["admin"]`, list + detail share a prefix), one hook per
+read (`useInvoices(q)`, `useChains()`, …; lists keep the previous page while
+the next loads), `useAdminMutation` (success / error toasts with the same
+verb as the control, invalidates the given keys + the audit log, maps errors
+via `describeError`) and `useOptimisticItemMutation` (switches). Retries only
+transient errors. `applyFieldErrors(error, setError, fields, map)` puts
+`ApiError.fields` on react-hook-form fields.
+
+**Building blocks** (`src/components/admin/`): `PageHeader` / `Section` /
+`DetailList`, `DataTable` (loading / empty / error+retry, row links,
+expandable rows, pagination, cards under 768 px), `PaginationBar`,
+`FilterBar` + `SearchFilter` (debounced) / `SelectFilter` / `DateRangeFilter`,
+`useUrlState` (filters + page in the URL, page reset on filter change),
+status badges (invoice / quote / transfer / webhook / merchant / role),
+`CopyButton`, `MonoValue` (shortened mono value + copy + explorer link),
+`Money` / `CryptoAmount` (string formatters only), `RelativeTime` /
+`DateTimeStack`, `ConfirmDialog` (busy until the action settles),
+`SecretRevealDialog` (shown once; can't close until "I've stored it"),
+`JsonViewer`, `CodeBlock`, `FormField` / `FormError`, `ErrorState` /
+`EmptyState` / skeletons.
+
+### Mock accounts
+
+`pnpm mock` seeds three accounts (also printed at startup):
+
+| Role | Email | Password |
+|---|---|---|
+| owner | `owner@cryptopay.test` | `owner-pass-123` |
+| admin | `admin@cryptopay.test` | `admin-pass-123` |
+| viewer | `viewer@cryptopay.test` | `viewer-pass-123` |
+
+(`former.ops@cryptopay.test` is a deactivated admin.)
 
 ## Checkout (`/pay/[id]`)
 
@@ -233,7 +307,7 @@ documented at the top of `src/lib/wallets/deeplinks.ts`.
 ## Mock backend (`mock/server.mjs`)
 
 `pnpm mock` (env `MOCK_PORT=8787`, `MOCK_CHECKOUT_BASE`, `MOCK_BLOCK_MS=2000`,
-`MOCK_CLOCK_SKEW_MS`, `MOCK_WC_PROJECT_ID`). It implements
+`MOCK_CLOCK_SKEW_MS`, `MOCK_WC_PROJECT_ID`, `MOCK_ADMIN_DELAY_MS=120`). It implements
 `GET /api/checkout/{id}`, `POST /api/checkout/{id}/quote` (incl. 400/404/409/422)
 and `/healthz` with the real catalog of assets, mock rates and static-wallet
 unique amounts. Confirmations tick every `MOCK_BLOCK_MS` and `confirming`
@@ -261,3 +335,19 @@ Seeded scenarios (open `http://localhost:8787/mock` for links and controls):
 Controls: `GET /mock/invoices/{id}/advance?to=next|pending|partial|confirming|paid|overpaid|expired|underpaid|cancelled`,
 `POST /mock/invoices` `{ amount, currency, asset_id, wallet_kind, state, ttl_seconds, id }`,
 `GET /mock/outage?seconds=20` (503s), `GET /mock/reset`.
+
+**Admin API** (`mock/admin.mjs`, every endpoint of docs/api.md §3, state in
+memory, reset by `/mock/reset`): `cp_session` HttpOnly cookie, CSRF header
+check on every mutation (403 without it), viewers get 403 on mutations and
+non-owners on `/users`, login rate limit (5 failures / 10 min → 429),
+validation errors with `fields`, 404 / 409 / 422, `page` / `page_size`
+paging and the documented filters, an audit entry per mutation. Seeded with
+deterministic data: 5 merchants (one with a failing webhook endpoint, one
+disabled), ~150 invoices over 90 days in every status (the checkout
+scenarios above included, so console-created invoices open at `/pay/{id}`),
+unmatched / orphaned transfers, delivered / failed webhook events, 13 chains
+with varied scanner state (lagging, erroring, disabled, default RPC, no
+wallet), 5 wallets, custom token without a rate, audit history. Assets
+disabled in the console disappear from the mock checkout. RPC tests fail for
+hosts containing `bad` / `invalid` / `down`; webhook deliveries fail for URLs
+containing `broken` / `down`. `mock/admin.test.mjs` smoke-tests it.

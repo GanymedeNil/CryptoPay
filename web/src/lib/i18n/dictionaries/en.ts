@@ -1,6 +1,8 @@
 import type { Dictionary } from "../types";
+import { adminEn } from "./admin-en";
 
 export const en: Dictionary = {
+  admin: adminEn,
   common: {
     appName: "CryptoPay",
     language: "Language",

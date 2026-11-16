@@ -13,6 +13,7 @@
 
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
+import { createAdminMock, DEFAULT_MERCHANT_ID } from "./admin.mjs";
 
 const PORT = Number(process.env.MOCK_PORT || 8787);
 const CHECKOUT_BASE = (process.env.MOCK_CHECKOUT_BASE || "http://localhost:3000").replace(/\/+$/, "");
@@ -372,11 +373,14 @@ function tick(inv) {
   }
 }
 
+/** Set by the admin mock: assets disabled (or on unpayable chains) in the console are hidden. */
+let isAssetPayable = () => true;
+
 function checkoutView(inv) {
   tick(inv);
   const assets = inv.no_assets
     ? []
-    : ASSETS.filter((a) => inv.show_testnets || !a.is_testnet).map(({ precision, ...a }) => ({
+    : ASSETS.filter((a) => (inv.show_testnets || !a.is_testnet) && isAssetPayable(a)).map(({ precision, ...a }) => ({
         ...a,
         estimated_amount: estimate(inv, { ...a, precision }),
       }));
@@ -411,7 +415,12 @@ function createInvoice(opts = {}) {
   const ttl = Number(opts.ttl_seconds ?? 15 * 60) * 1000;
   const inv = {
     id: opts.id || randomUUID(),
+    merchant_id: opts.merchant_id ?? DEFAULT_MERCHANT_ID,
     merchant_name: opts.merchant_name ?? "Acme Coffee Roasters",
+    order_id: opts.order_id ?? "",
+    customer_email: opts.customer_email ?? "",
+    metadata: opts.metadata ?? {},
+    old_quotes: [],
     title: opts.title ?? "Order #10482 · Ethiopia Guji, 2 × 250 g",
     description: opts.description ?? "",
     amount: opts.amount ?? "99.00",
@@ -457,9 +466,35 @@ const SCENARIOS = [
   { key: "no-assets", label: "No payable assets", id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", opts: { no_assets: true } },
 ];
 
+// Admin API (docs/api.md §3) — shares the invoices above, so invoices created
+// in the console open on the checkout page and vice versa.
+const admin = createAdminMock({
+  invoices,
+  CHAINS,
+  ASSETS,
+  USD_RATE,
+  FIAT_PER_USD,
+  CHECKOUT_BASE,
+  createInvoice,
+  advance,
+  tick,
+  quoteView,
+  makeQuote,
+  txHashFor,
+  addressFor,
+  divCeil,
+  baseOf,
+  wholeOf,
+  send: (...a) => send(...a),
+  apiError: (...a) => apiError(...a),
+  readJson: (req) => readJson(req),
+});
+isAssetPayable = admin.isAssetPayable;
+
 function seed() {
   invoices.clear();
   for (const s of SCENARIOS) createInvoice({ ...s.opts, id: s.id });
+  admin.seed();
 }
 seed();
 
@@ -543,6 +578,12 @@ const server = createServer(async (req, res) => {
       return apiError(res, 404, "not_found", "unknown mock endpoint");
     }
 
+    // ---- admin API --------------------------------------------------------
+    if (parts[0] === "api" && parts[1] === "admin") {
+      if (now() < outageUntil) return apiError(res, 503, "unavailable", "mock outage");
+      return await admin.handle(req, res, url, parts.slice(2), method);
+    }
+
     // ---- checkout API -----------------------------------------------------
     if (parts[0] === "api" && parts[1] === "checkout" && parts[2]) {
       if (now() < outageUntil) return apiError(res, 503, "unavailable", "mock outage");
@@ -562,11 +603,14 @@ const server = createServer(async (req, res) => {
           return apiError(res, 409, "conflict", "funds already detected on another quote");
         }
         const asset = ASSETS.find((a) => a.id === body.asset_id);
-        if (!asset || inv.no_assets || (!inv.show_testnets && asset.is_testnet)) {
+        if (!asset || inv.no_assets || (!inv.show_testnets && asset.is_testnet) || !isAssetPayable(asset)) {
           return apiError(res, 422, "unprocessable", "asset unavailable");
         }
         if (inv.quote?.asset_id !== asset.id) {
-          if (inv.quote) inv.quote.status = "superseded";
+          if (inv.quote) {
+            inv.quote.status = "superseded";
+            inv.old_quotes.push(inv.quote);
+          }
           inv.quote = makeQuote(inv, asset);
         }
         return send(res, 200, checkoutView(inv));
@@ -584,6 +628,7 @@ const server = createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`CryptoPay mock API on http://localhost:${PORT}  (scenarios: http://localhost:${PORT}/mock)`);
   for (const s of SCENARIOS) console.log(`  ${s.key.padEnd(14)} ${CHECKOUT_BASE}/pay/${s.id}`);
+  admin.printCredentials(CHECKOUT_BASE);
 });
 
 for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => server.close(() => process.exit(0)));

@@ -3,10 +3,13 @@
  * dictionary: add a key here first, then the same key to `en.ts` (TypeScript
  * fails the build if a key is missing). Placeholders use `{name}`.
  *
- * Namespaces: `common`, `landing`, `checkout`, `wallet`; the admin console
- * adds `admin`.
+ * Namespaces: `common`, `landing`, `checkout`, `wallet`, and `admin` (the
+ * admin console, kept in `admin-zh.ts` / `admin-en.ts`).
  */
+import { adminZh } from "./admin-zh";
+
 export const zh = {
+  admin: adminZh,
   common: {
     appName: "CryptoPay",
     language: "语言",
