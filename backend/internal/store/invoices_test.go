@@ -410,3 +410,56 @@ func TestListInvoicesToExpire(t *testing.T) {
 	require.Len(t, second, 1)
 	assert.Equal(t, p3.ID, second[0].ID)
 }
+
+func TestListInvoicesToExpireAfter(t *testing.T) {
+	t.Parallel()
+	clk := storetest.FixedClock(time.Date(2030, 5, 1, 12, 0, 0, 0, time.UTC))
+	s := storetest.New(t, store.WithClock(clk.Now))
+	m := storetest.Merchant(t, s)
+	now := clk.Now()
+	mk := func(st domain.InvoiceStatus, exp time.Duration) domain.Invoice {
+		return storetest.Invoice(t, s, m.ID, func(i *domain.Invoice) { i.Status = st; i.ExpiresAt = now.Add(exp) })
+	}
+	// Two invoices share an expiry: the id breaks the tie.
+	a := mk(domain.InvoicePartial, -3*time.Minute)
+	b1 := mk(domain.InvoicePartial, -2*time.Minute)
+	b2 := mk(domain.InvoicePartial, -2*time.Minute)
+	c := mk(domain.InvoicePending, -time.Minute)
+	mk(domain.InvoicePartial, time.Minute) // not yet due
+	if b2.ID.String() < b1.ID.String() {
+		b1, b2 = b2, b1
+	}
+	ids := func(invs []domain.Invoice) []uuid.UUID {
+		out := []uuid.UUID{}
+		for _, i := range invs {
+			out = append(out, i.ID)
+		}
+		return out
+	}
+
+	// Zero cursor = from the beginning (same as ListInvoicesToExpire).
+	all, err := s.ListInvoicesToExpireAfter(ctx, now, time.Time{}, uuid.Nil, 10)
+	require.NoError(t, err)
+	assert.Equal(t, []uuid.UUID{a.ID, b1.ID, b2.ID, c.ID}, ids(all))
+
+	// Paging with the last row of each page visits every row exactly once.
+	var seen []uuid.UUID
+	var cur domain.Invoice
+	for range 10 {
+		page, err := s.ListInvoicesToExpireAfter(ctx, now, cur.ExpiresAt, cur.ID, 1)
+		require.NoError(t, err)
+		if len(page) == 0 {
+			break
+		}
+		seen = append(seen, page[0].ID)
+		cur = page[0]
+	}
+	assert.Equal(t, []uuid.UUID{a.ID, b1.ID, b2.ID, c.ID}, seen)
+
+	// Status filter and validation.
+	page, err := s.ListInvoicesToExpireAfter(ctx, now, a.ExpiresAt, a.ID, 10, domain.InvoicePartial)
+	require.NoError(t, err)
+	assert.Equal(t, []uuid.UUID{b1.ID, b2.ID}, ids(page))
+	_, err = s.ListInvoicesToExpireAfter(ctx, now, a.ExpiresAt, a.ID, 10, "nope")
+	require.ErrorIs(t, err, store.ErrInvalid)
+}

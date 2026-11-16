@@ -301,3 +301,34 @@ func (s *Store) ListInvoicesToExpire(ctx context.Context, now time.Time, limit i
 		ORDER BY i.expires_at, i.id LIMIT $3 FOR UPDATE SKIP LOCKED`, sts, now.UTC(), limit)
 	return collectInvoices(rows, err, op)
 }
+
+// ListInvoicesToExpireAfter is ListInvoicesToExpire restricted to invoices
+// strictly after (afterExpiresAt, afterID) in its (expires_at, id) order: a
+// keyset cursor for callers that page through candidates which may
+// legitimately stay unchanged (e.g. partial invoices whose funds are still
+// unconfirmed), so the same rows are not returned over and over. A zero
+// afterExpiresAt starts at the beginning. Locking is as ListInvoicesToExpire.
+func (s *Store) ListInvoicesToExpireAfter(ctx context.Context, now, afterExpiresAt time.Time, afterID uuid.UUID, limit int, statuses ...domain.InvoiceStatus) ([]domain.Invoice, error) {
+	const op = "list invoices to expire after"
+	if afterExpiresAt.IsZero() {
+		return s.ListInvoicesToExpire(ctx, now, limit, statuses...)
+	}
+	if len(statuses) == 0 {
+		statuses = DefaultExpiryStatuses
+	}
+	sts := make([]string, len(statuses))
+	for i, st := range statuses {
+		if !st.Valid() {
+			return nil, invalidf(op, "invalid status %q", st)
+		}
+		sts[i] = string(st)
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.Query(ctx, `SELECT `+invoiceCols+` FROM invoices i
+		WHERE i.status = ANY($1) AND i.expires_at <= $2 AND (i.expires_at, i.id) > ($4, $5)
+		ORDER BY i.expires_at, i.id LIMIT $3 FOR UPDATE SKIP LOCKED`,
+		sts, now.UTC(), limit, afterExpiresAt.UTC(), afterID)
+	return collectInvoices(rows, err, op)
+}
