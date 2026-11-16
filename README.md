@@ -57,6 +57,7 @@ docker compose ps                   # 等待 backend 显示 healthy
 - 后端健康检查：http://127.0.0.1:8080/healthz（后端端口只绑定在 127.0.0.1）
 - 端口被占用时可在 `.env` 中修改 `WEB_PORT` / `BACKEND_PORT`
 - 开发演示数据：`make seed-dev`——创建演示商户和 API key（只显示一次），并把由公开的 Hardhat 测试助记词派生的 **仅供测试** 的 xpub 钱包设为 Sepolia / Tron Nile / Bitcoin Testnet 的默认钱包并启用这些测试网（`APP_ENV=production` 时拒绝运行；**切勿向这些地址发送真实资产**）
+- 在测试网上手动走一遍下单、付款、确认和 Webhook：见 [docs/testnet-walkthrough.md](docs/testnet-walkthrough.md)（本地 Webhook 接收器：`scripts/webhook-receiver.py`）
 - 停止：`make down`；删除数据卷：`make clean`
 
 不使用 Docker 时：`cd backend && go run ./cmd/gateway`（需要 `DATABASE_URL`、`APP_SECRET`），前端见 `web/README.md`。
