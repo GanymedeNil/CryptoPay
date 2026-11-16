@@ -44,7 +44,10 @@ func Chains() []domain.Chain {
 		},
 		{
 			ID: "litecoin", Family: domain.FamilyUTXO, Name: "Litecoin", NativeSymbol: "LTC",
-			RPCURLs: []string{"https://litecoin-rpc.publicnode.com"}, Confirmations: 6, PollInterval: 30 * time.Second, ScanBatch: 5,
+			// No keyless Litecoin JSON-RPC exists on publicnode/drpc/blockpi/ankr/nownodes/getblock
+			// (checked 2026-11). Tatum's gateway works without a key but anonymous use is limited
+			// to 5 requests/minute: enough for local dev, not for production or catch-up scans.
+			RPCURLs: []string{"https://litecoin-mainnet.gateway.tatum.io"}, Confirmations: 6, PollInterval: 60 * time.Second, ScanBatch: 1,
 			ExplorerTxURL: "https://litecoinspace.org/tx/{tx}", ExplorerAddr: "https://litecoinspace.org/address/{address}",
 			Params: domain.ChainParam{Bech32HRP: "ltc", P2PKHVersion: 0x30, P2SHVersion: 0x32, URIScheme: "litecoin", BIP44CoinType: 2},
 		},
