@@ -312,8 +312,19 @@ export interface Wallet {
   xpub: string;
   address: string;
   next_index: number;
+  /** Chains this wallet is the default wallet of. */
   chain_ids: string[];
+  /** Merchants using it as their own wallet. */
+  merchant_bindings: { merchant_id: string; merchant_name: string; chain_id: string }[];
   created_at: string;
+}
+
+/** A merchant's own receiving wallet on one chain (overrides the chain's default wallet for that merchant). */
+export interface MerchantWallet {
+  chain_id: string;
+  wallet_id: string;
+  wallet_name: string;
+  kind: WalletKind;
 }
 
 export interface Chain {
@@ -332,6 +343,7 @@ export interface Chain {
   scan_batch: number;
   explorer_tx_url: string;
   explorer_addr_url: string;
+  /** The chain's DEFAULT wallet (merchants without their own wallet). */
   wallet_id: string | null;
   scan_cursor: number;
   last_head: number;
@@ -339,8 +351,10 @@ export interface Chain {
   lag: number;
   last_scan_at: string | null;
   last_error: string;
-  /** enabled && wallet assigned && rpc configured */
+  /** enabled && default wallet assigned && rpc configured */
   payable: boolean;
+  /** Merchants with their own wallet on this chain (they can be paid even when payable is false). */
+  merchant_wallets: number;
 }
 
 export interface Asset extends AssetInfo {
@@ -500,6 +514,8 @@ export interface CreateMerchantResponse {
 export interface MerchantDetail {
   merchant: Merchant;
   api_keys: ApiKey[];
+  /** Explicit bindings only. */
+  wallets: MerchantWallet[];
 }
 
 export interface UpdateMerchantRequest {
@@ -522,6 +538,10 @@ export interface RotateWebhookSecretResponse {
   webhook_secret: string;
 }
 
+export interface SetMerchantWalletRequest {
+  wallet_id: string;
+}
+
 export interface UpdateChainRequest {
   enabled?: boolean;
   /** [] resets to env/default. */
@@ -529,6 +549,7 @@ export interface UpdateChainRequest {
   confirmations?: number;
   poll_interval_ms?: number;
   scan_batch?: number;
+  /** The chain's default wallet. */
   wallet_id?: string | null;
 }
 

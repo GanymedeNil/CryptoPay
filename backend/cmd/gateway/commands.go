@@ -199,7 +199,8 @@ func runSeedDev(ctx context.Context, args []string, getenv func(string) string, 
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(stdout, "\nTEST-ONLY wallets (public Hardhat mnemonic; NEVER send real funds):")
+	fmt.Fprintln(stdout, "\nTEST-ONLY default wallets of the testnets (public Hardhat mnemonic; NEVER send real funds).")
+	fmt.Fprintln(stdout, "Every merchant without its own wallet on a chain is paid to the chain's default wallet:")
 	for _, dw := range devWallets {
 		w, err := seedWallet(ctx, st, existing, dw)
 		if err != nil {
@@ -214,7 +215,7 @@ func runSeedDev(ctx context.Context, args []string, getenv func(string) string, 
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(stdout, "  %-16s enabled, wallet %q, first address %s\n", c.ID, w.Name, first)
+		fmt.Fprintf(stdout, "  %-16s enabled, default wallet %q, first address %s\n", c.ID, w.Name, first)
 	}
 	if _, err := st.InsertAuditLog(ctx, domain.AuditLog{Action: "dev.seed", TargetType: "merchant", TargetID: m.ID.String(),
 		ActorEmail: "cli:seed-dev", Detail: []byte(fmt.Sprintf(`{"api_key_prefix":%q}`, prefix))}); err != nil {
@@ -254,7 +255,11 @@ func seedWallet(ctx context.Context, st *store.Store, existing []store.WalletVie
 	if err := hdwallet.Validate(dw.Family, dw.Xpub); err != nil {
 		return domain.Wallet{}, err
 	}
-	return st.CreateWallet(ctx, domain.Wallet{Name: dw.Name, Family: dw.Family, Kind: domain.WalletXpub, Xpub: dw.Xpub})
+	w, err := st.CreateWallet(ctx, domain.Wallet{Name: dw.Name, Family: dw.Family, Kind: domain.WalletXpub, Xpub: dw.Xpub})
+	if store.IsConstraint(err, store.ConstraintWalletXpub) {
+		return domain.Wallet{}, fmt.Errorf("wallet %q: its xpub is already registered for another family; delete that wallet first: %w", dw.Name, err)
+	}
+	return w, err
 }
 
 // runHealthcheck GETs the server's /healthz (by default on the port of

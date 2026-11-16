@@ -1,7 +1,7 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { ChevronDownIcon, CircleCheckIcon, CircleSlashIcon, TriangleAlertIcon } from "lucide-react";
+import { ChevronDownIcon, CircleCheckIcon, CircleSlashIcon, TriangleAlertIcon, UsersIcon } from "lucide-react";
 import Link from "next/link";
 import { useId, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
@@ -129,6 +129,14 @@ function ChainRow({ chain: c, wallets }: { chain: Chain; wallets: Wallet[] | und
                     )}
                   </span>
                 )}
+                {c.merchant_wallets > 0 && (
+                  <span className="inline-flex items-center gap-1 text-foreground/80" data-testid="merchant-wallets">
+                    <UsersIcon className="size-3.5" aria-hidden />
+                    {!c.payable && c.enabled
+                      ? t("admin.chains.merchantWalletsPayable", { n: formatCount(c.merchant_wallets, locale) })
+                      : t("admin.chains.merchantWallets", { n: formatCount(c.merchant_wallets, locale) })}
+                  </span>
+                )}
                 {c.enabled && (
                   <StatusBadge tone={HEALTH_TONE[health]}>
                     {health === "error"
@@ -227,6 +235,7 @@ const NONE = "__none__";
 
 function WalletAssignment({ chain: c, wallets }: { chain: Chain; wallets: Wallet[] | undefined }) {
   const t = useT();
+  const { locale } = useLocale();
   const { canWrite } = useAuth();
   const selectId = useId();
   const options = walletsForFamily(wallets, c.family);
@@ -270,6 +279,9 @@ function WalletAssignment({ chain: c, wallets }: { chain: Chain; wallets: Wallet
           t("admin.chains.wallet.hint", { family })
         )}
       </p>
+      {c.merchant_wallets > 0 && (
+        <p className="text-xs text-muted-foreground">{t("admin.chains.wallet.merchantHint", { n: formatCount(c.merchant_wallets, locale) })}</p>
+      )}
     </div>
   );
 }

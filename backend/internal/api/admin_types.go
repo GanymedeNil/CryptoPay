@@ -58,15 +58,22 @@ func newAPIKeyJSON(k domain.APIKey) apiKeyJSON {
 }
 
 type walletJSON struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Family    string    `json:"family"`
-	Kind      string    `json:"kind"`
-	Xpub      string    `json:"xpub"`
-	Address   string    `json:"address"`
-	NextIndex uint32    `json:"next_index"`
-	ChainIDs  []string  `json:"chain_ids"`
-	CreatedAt time.Time `json:"created_at"`
+	ID               string              `json:"id"`
+	Name             string              `json:"name"`
+	Family           string              `json:"family"`
+	Kind             string              `json:"kind"`
+	Xpub             string              `json:"xpub"`
+	Address          string              `json:"address"`
+	NextIndex        uint32              `json:"next_index"`
+	ChainIDs         []string            `json:"chain_ids"`
+	MerchantBindings []walletBindingJSON `json:"merchant_bindings"`
+	CreatedAt        time.Time           `json:"created_at"`
+}
+
+type walletBindingJSON struct {
+	MerchantID   string `json:"merchant_id"`
+	MerchantName string `json:"merchant_name"`
+	ChainID      string `json:"chain_id"`
 }
 
 func newWalletJSON(w store.WalletView) walletJSON {
@@ -74,8 +81,25 @@ func newWalletJSON(w store.WalletView) walletJSON {
 	if ids == nil {
 		ids = []string{}
 	}
+	bindings := make([]walletBindingJSON, 0, len(w.MerchantBindings))
+	for _, b := range w.MerchantBindings {
+		bindings = append(bindings, walletBindingJSON{MerchantID: b.MerchantID.String(), MerchantName: b.MerchantName, ChainID: b.ChainID})
+	}
 	return walletJSON{ID: w.ID.String(), Name: w.Name, Family: string(w.Family), Kind: string(w.Kind),
-		Xpub: w.Xpub, Address: w.Address, NextIndex: w.NextIndex, ChainIDs: ids, CreatedAt: w.CreatedAt.UTC()}
+		Xpub: w.Xpub, Address: w.Address, NextIndex: w.NextIndex, ChainIDs: ids, MerchantBindings: bindings,
+		CreatedAt: w.CreatedAt.UTC()}
+}
+
+// merchantWalletJSON is a merchant's own receiving wallet on one chain.
+type merchantWalletJSON struct {
+	ChainID    string `json:"chain_id"`
+	WalletID   string `json:"wallet_id"`
+	WalletName string `json:"wallet_name"`
+	Kind       string `json:"kind"`
+}
+
+func newMerchantWalletJSON(b store.MerchantWallet) merchantWalletJSON {
+	return merchantWalletJSON{ChainID: b.ChainID, WalletID: b.WalletID.String(), WalletName: b.WalletName, Kind: string(b.WalletKind)}
 }
 
 type chainJSON struct {
@@ -100,9 +124,12 @@ type chainJSON struct {
 	LastScanAt      *time.Time `json:"last_scan_at"`
 	LastError       string     `json:"last_error"`
 	Payable         bool       `json:"payable"`
+	MerchantWallets int        `json:"merchant_wallets"`
 }
 
 // newChainJSON renders a chain with its effective RPC endpoints, masked.
+// payable describes the chain's default wallet only (merchant_wallets counts
+// the merchants with their own wallet on it, who can be paid regardless).
 func newChainJSON(c domain.Chain) chainJSON {
 	urls, src := store.ResolveRPC(c)
 	masked := make([]string, 0, len(urls))
@@ -121,7 +148,8 @@ func newChainJSON(c domain.Chain) chainJSON {
 		Confirmations: c.Confirmations, PollIntervalMS: c.PollInterval.Milliseconds(), ScanBatch: c.ScanBatch,
 		ExplorerTxURL: c.ExplorerTxURL, ExplorerAddrURL: c.ExplorerAddr,
 		ScanCursor: c.ScanCursor, LastHead: c.LastHead, LastScanAt: utcPtr(c.LastScanAt), LastError: c.LastError,
-		Payable: c.Enabled && c.WalletID != nil && len(urls) > 0,
+		Payable:         c.Enabled && c.WalletID != nil && len(urls) > 0,
+		MerchantWallets: c.MerchantWallets,
 	}
 	if c.LastHead > c.ScanCursor {
 		out.Lag = c.LastHead - c.ScanCursor

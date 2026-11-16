@@ -1,6 +1,7 @@
 "use client";
 
 import { MoreHorizontalIcon, PencilIcon, PlusIcon, TrashIcon, WalletIcon } from "lucide-react";
+import Link from "next/link";
 import { useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -94,18 +95,7 @@ export function WalletsPage() {
       id: "chains",
       header: t("admin.wallets.columns.chains"),
       className: "min-w-44 whitespace-normal",
-      cell: (w) =>
-        w.chain_ids.length ? (
-          <div className="flex max-w-72 flex-wrap gap-1">
-            {w.chain_ids.map((c) => (
-              <span key={c} className="rounded-md bg-muted px-1.5 py-0.5 text-[11px]">
-                {chainName(c)}
-              </span>
-            ))}
-          </div>
-        ) : (
-          <span className="text-xs text-muted-foreground">{t("admin.wallets.notAssigned")}</span>
-        ),
+      cell: (w) => <WalletUsage wallet={w} chainName={chainName} />,
     },
     { id: "created", header: t("admin.wallets.columns.created"), cell: (w) => <RelativeTime iso={w.created_at} className="text-muted-foreground" /> },
     {
@@ -146,7 +136,7 @@ export function WalletsPage() {
               <span className="text-muted-foreground">{t(`admin.walletKinds.${w.kind}` as MessageKey)}</span>
             </div>
             <MonoValue value={w.kind === "xpub" ? w.xpub : w.address} label={t("admin.wallets.columns.key")} short={[10, 8]} />
-            <p className="text-xs text-muted-foreground">{w.chain_ids.length ? w.chain_ids.map(chainName).join(" · ") : t("admin.wallets.notAssigned")}</p>
+            <WalletUsage wallet={w} chainName={chainName} />
           </div>
         )}
       />
@@ -175,13 +165,65 @@ export function WalletsPage() {
           <DialogHeader>
             <DialogTitle>{t("admin.wallets.inUseTitle")}</DialogTitle>
           </DialogHeader>
-          <p className="text-sm text-pretty text-muted-foreground">{t("admin.wallets.inUse")}</p>
+          {inUse && inUse.merchant_bindings.length > 0 ? (
+            <div className="space-y-2 text-sm text-pretty text-muted-foreground">
+              <p>{t("admin.wallets.inUseBindings")}</p>
+              <ul className="space-y-1" data-testid="wallet-in-use-merchants">
+                {inUse.merchant_bindings.map((b) => (
+                  <li key={`${b.merchant_id}-${b.chain_id}`}>
+                    <Link href={`/admin/merchants/${b.merchant_id}`} className="font-medium text-primary underline-offset-4 hover:underline">
+                      {b.merchant_name}
+                    </Link>{" "}
+                    · {chainName(b.chain_id)}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p className="text-sm text-pretty text-muted-foreground">{t("admin.wallets.inUse")}</p>
+          )}
           <DialogFooter>
             <Button onClick={() => setInUse(null)}>{t("admin.common.done")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+/** Where a wallet is used: as the default wallet of chains and as merchants' own wallet. */
+export function WalletUsage({ wallet: w, chainName }: { wallet: Wallet; chainName: (id: string) => string }) {
+  const t = useT();
+  if (w.chain_ids.length === 0 && w.merchant_bindings.length === 0) {
+    return <span className="text-xs text-muted-foreground">{t("admin.wallets.notAssigned")}</span>;
+  }
+  return (
+    <div className="max-w-80 space-y-1.5">
+      {w.chain_ids.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="mr-0.5 text-[11px] text-muted-foreground">{t("admin.wallets.usedAsDefault")}</span>
+          {w.chain_ids.map((c) => (
+            <span key={c} className="rounded-md bg-muted px-1.5 py-0.5 text-[11px]">
+              {chainName(c)}
+            </span>
+          ))}
+        </div>
+      )}
+      {w.merchant_bindings.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="mr-0.5 text-[11px] text-muted-foreground">{t("admin.wallets.usedByMerchants")}</span>
+          {w.merchant_bindings.map((b) => (
+            <Link
+              key={`${b.merchant_id}-${b.chain_id}`}
+              href={`/admin/merchants/${b.merchant_id}`}
+              className="rounded-md bg-primary/10 px-1.5 py-0.5 text-[11px] text-primary underline-offset-2 hover:underline"
+            >
+              {b.merchant_name} · {chainName(b.chain_id)}
+            </Link>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

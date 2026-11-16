@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useNow } from "@/hooks/use-now";
-import { chainHealth, type ChainHealth } from "@/lib/admin/chains";
+import { chainHealth, receivesPayments, type ChainHealth } from "@/lib/admin/chains";
 import { useChains } from "@/lib/admin/queries";
 import { formatRelativeTime } from "@/lib/format/relative";
 import { formatCount } from "@/lib/format/units";
@@ -86,7 +86,7 @@ function ChainTile({ chain: c }: { chain: Chain }) {
       <div className="flex items-center gap-1.5">
         <span className={cn("size-2 shrink-0 rounded-full", HEALTH_DOT[health])} aria-hidden />
         <span className="min-w-0 truncate text-[13px] font-medium">{c.name}</span>
-        {!c.payable && (
+        {!receivesPayments(c) && (
           <span className="ml-auto shrink-0 rounded border border-warning-border bg-warning-surface px-1 text-[10px] font-medium text-warning">
             {t("admin.overview.chainHealth.notPayable")}
           </span>

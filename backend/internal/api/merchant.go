@@ -205,7 +205,7 @@ func (a *API) merchantCancelInvoice(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) merchantListAssets(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	assets, err := a.store.ListPayableAssets(ctx)
+	assets, err := a.store.ListPayableAssets(ctx, merchantFrom(ctx).Merchant.ID)
 	if err != nil {
 		a.fail(w, r, err)
 		return

@@ -34,7 +34,9 @@ import type {
   Overview,
   OverviewQuery,
   Page,
+  MerchantWallet,
   RotateWebhookSecretResponse,
+  SetMerchantWalletRequest,
   Settings,
   TestRpcRequest,
   TestRpcResult,
@@ -120,6 +122,12 @@ export function createAdminApi(client: ApiClient = apiClient) {
     /** `POST /merchants/{id}/webhook-secret` (rotates). */
     rotateWebhookSecret: (merchantId: string) =>
       client.post<RotateWebhookSecretResponse>(`${A}/merchants/${seg(merchantId)}/webhook-secret`),
+    /** `PUT /merchants/{id}/wallets/{chain_id}` (insert or replace the merchant's own wallet on a chain). */
+    setMerchantWallet: (merchantId: string, chainId: string, body: SetMerchantWalletRequest) =>
+      client.put<MerchantWallet>(`${A}/merchants/${seg(merchantId)}/wallets/${seg(chainId)}`, body),
+    /** `DELETE /merchants/{id}/wallets/{chain_id}` → 204 (back to the chain's default wallet; idempotent). */
+    unsetMerchantWallet: (merchantId: string, chainId: string) =>
+      client.delete<void>(`${A}/merchants/${seg(merchantId)}/wallets/${seg(chainId)}`),
 
     // ---- chains ----------------------------------------------------------
     /** `GET /chains` */
@@ -146,12 +154,12 @@ export function createAdminApi(client: ApiClient = apiClient) {
     /** `POST /wallets/preview` */
     previewWallet: (body: WalletPreviewRequest) =>
       client.post<WalletPreviewResponse>(`${A}/wallets/preview`, body),
-    /** `POST /wallets` → 201 */
+    /** `POST /wallets` → 201 (409 with `fields.xpub` / `fields.address` when the key material is already registered). */
     createWallet: (body: CreateWalletRequest) => client.post<Wallet>(`${A}/wallets`, body),
     /** `PATCH /wallets/{id}` */
     updateWallet: (id: string, body: UpdateWalletRequest) =>
       client.patch<Wallet>(`${A}/wallets/${seg(id)}`, body),
-    /** `DELETE /wallets/{id}` → 204 (409 if referenced by quotes). */
+    /** `DELETE /wallets/{id}` → 204 (409 if referenced by quotes or used as a merchant's own wallet). */
     deleteWallet: (id: string) => client.delete<void>(`${A}/wallets/${seg(id)}`),
 
     // ---- webhook events --------------------------------------------------

@@ -1,10 +1,14 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"cryptopay/internal/auth"
 	"cryptopay/internal/domain"
@@ -128,10 +132,128 @@ func (a *API) adminGetMerchant(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
+	wallets, err := a.store.ListMerchantWallets(ctx, id)
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, struct {
-		Merchant merchantJSON `json:"merchant"`
-		APIKeys  []apiKeyJSON `json:"api_keys"`
-	}{newMerchantJSON(m), mapSlice(keys, newAPIKeyJSON)})
+		Merchant merchantJSON         `json:"merchant"`
+		APIKeys  []apiKeyJSON         `json:"api_keys"`
+		Wallets  []merchantWalletJSON `json:"wallets"`
+	}{newMerchantJSON(m), mapSlice(keys, newAPIKeyJSON), mapSlice(wallets, newMerchantWalletJSON)})
+}
+
+// merchantAndChain loads the merchant {id} and chain {chain_id} of a
+// merchant wallet route (404 when either does not exist).
+func (a *API) merchantAndChain(r *http.Request) (domain.Merchant, domain.Chain, error) {
+	ctx := r.Context()
+	id, err := pathUUID(r, "id")
+	if err != nil {
+		return domain.Merchant{}, domain.Chain{}, err
+	}
+	m, err := a.store.GetMerchant(ctx, id)
+	if err != nil {
+		return domain.Merchant{}, domain.Chain{}, err
+	}
+	c, err := a.store.GetChain(ctx, chi.URLParam(r, "chain_id"))
+	if err != nil {
+		return domain.Merchant{}, domain.Chain{}, err
+	}
+	return m, c, nil
+}
+
+// adminSetMerchantWallet gives a merchant its own receiving wallet on a
+// chain (replacing an earlier one). Quotes already created keep their
+// wallet and address; only new quotes use it.
+func (a *API) adminSetMerchantWallet(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	m, c, err := a.merchantAndChain(r)
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	var body struct {
+		WalletID string `json:"wallet_id"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	f := fields{}
+	var wid uuid.UUID
+	if raw := strings.TrimSpace(body.WalletID); raw == "" {
+		f.add("wallet_id", "is required")
+	} else if wid, err = uuid.Parse(raw); err != nil {
+		f.add("wallet_id", "must be a wallet id")
+	} else if msg := a.checkWalletForChain(ctx, c, wid); msg != "" {
+		f.add("wallet_id", msg)
+	}
+	if err := f.err(); err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	var out store.MerchantWallet
+	err = a.inTx(ctx, func(tx *store.Store) error {
+		var prev any
+		if p, err := tx.GetMerchantWallet(ctx, m.ID, c.ID); err == nil {
+			prev = p.WalletID.String()
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+		var err error
+		if out, err = tx.SetMerchantWallet(ctx, m.ID, c.ID, wid); err != nil {
+			return err
+		}
+		return a.audit(ctx, tx, nil, auditEntry{Action: "merchant.wallet.set", TargetType: "merchant", TargetID: m.ID.String(),
+			Detail: map[string]any{"chain_id": c.ID, "wallet_id": wid.String(), "wallet_name": out.WalletName, "previous_wallet_id": prev}})
+	})
+	if errors.Is(err, store.ErrInvalid) || errors.Is(err, store.ErrForeignKey) {
+		// The wallet was deleted (or the merchant removed) concurrently.
+		err = errField("wallet_id", "the wallet cannot be used on this chain")
+	}
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	if a.hooks.ChainChanged != nil {
+		a.hooks.ChainChanged(c.ID)
+	}
+	writeJSON(w, http.StatusOK, newMerchantWalletJSON(out))
+}
+
+// adminUnsetMerchantWallet removes a merchant's own wallet on a chain: the
+// merchant falls back to the chain's default wallet. Idempotent.
+func (a *API) adminUnsetMerchantWallet(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	m, c, err := a.merchantAndChain(r)
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	removed := false
+	err = a.inTx(ctx, func(tx *store.Store) error {
+		prev, err := tx.GetMerchantWallet(ctx, m.ID, c.ID)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil // nothing bound: nothing to change or audit
+		}
+		if err != nil {
+			return err
+		}
+		if removed, err = tx.DeleteMerchantWallet(ctx, m.ID, c.ID); err != nil || !removed {
+			return err
+		}
+		return a.audit(ctx, tx, nil, auditEntry{Action: "merchant.wallet.unset", TargetType: "merchant", TargetID: m.ID.String(),
+			Detail: map[string]any{"chain_id": c.ID, "wallet_id": prev.WalletID.String(), "wallet_name": prev.WalletName}})
+	})
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	if removed && a.hooks.ChainChanged != nil {
+		a.hooks.ChainChanged(c.ID)
+	}
+	noContent(w)
 }
 
 func (a *API) adminUpdateMerchant(w http.ResponseWriter, r *http.Request) {

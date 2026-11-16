@@ -213,6 +213,7 @@ export function createAdminMock(ctx) {
       last_scan_at: c.last_scan_at,
       last_error: c.last_error,
       payable: c.enabled && Boolean(c.wallet_id) && urls.length > 0,
+      merchant_wallets: S.merchantWallets.filter((b) => b.chain_id === c.id).length,
     };
   }
 
@@ -264,8 +265,26 @@ export function createAdminMock(ctx) {
       address: w.address,
       next_index: w.next_index,
       chain_ids: S.chains.filter((c) => c.wallet_id === w.id).map((c) => c.id),
+      merchant_bindings: S.merchantWallets
+        .filter((b) => b.wallet_id === w.id)
+        .map((b) => ({ merchant_id: b.merchant_id, merchant_name: S.merchants.find((m) => m.id === b.merchant_id)?.name ?? "", chain_id: b.chain_id }))
+        .sort((a, b) => a.merchant_name.localeCompare(b.merchant_name) || a.chain_id.localeCompare(b.chain_id)),
       created_at: w.created_at,
     };
+  }
+
+  /** `MerchantWallet` (docs/api.md): a merchant's own wallet on a chain. */
+  function merchantWalletView(b) {
+    const w = S.wallets.find((x) => x.id === b.wallet_id);
+    return { chain_id: b.chain_id, wallet_id: b.wallet_id, wallet_name: w?.name ?? "", kind: w?.kind ?? "xpub" };
+  }
+
+  /** The merchant's own wallet on the chain, else the chain's default wallet, else null. */
+  function resolveWallet(merchantId, chainId) {
+    const b = merchantId ? S.merchantWallets.find((x) => x.merchant_id === merchantId && x.chain_id === chainId) : null;
+    const c = S.chains.find((x) => x.id === chainId);
+    const id = b?.wallet_id ?? c?.wallet_id ?? null;
+    return id ? (S.wallets.find((w) => w.id === id) ?? null) : null;
   }
 
   function amountUsd(inv) {
@@ -460,6 +479,7 @@ export function createAdminMock(ctx) {
       chains: [],
       assets: [],
       wallets: [],
+      merchantWallets: [],
       unmatched: [],
       webhookEvents: [],
       audit: [],
@@ -561,8 +581,12 @@ export function createAdminMock(ctx) {
       W(uuidFrom(rng), "Sparrow BTC vault", "utxo", "xpub", `zpub6r${fromDigest("btc", B58, 105)}`, "", 34, true, 98),
       W(uuidFrom(rng), "Phantom receiving address", "solana", "static", "", "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM", 0, true, 90),
       W(uuidFrom(rng), "Old LTC address", "utxo", "static", "", "ltc1qg82tzq6kp7fpmt9s7ad8r3yyysk7qwn8xr6aen", 0, false, 70),
+      // Merchants with funds of their own (merchant wallets, docs/architecture.md "Receiving wallets").
+      W(uuidFrom(rng), "Pixel Forge · EVM treasury", "evm", "xpub", `xpub6C${fromDigest("pixelforge", B58, 105)}`, "", 41, true, 50),
+      W(uuidFrom(rng), "Nimbus VPN · Tron hot wallet", "tron", "static", "", `T${fromDigest("nimbus-tron", B58, 33)}`, 0, true, 45),
+      W(uuidFrom(rng), "Acme · Litecoin", "utxo", "static", "", `ltc1q${fromDigest("acme-ltc", BECH32, 38)}`, 0, false, 20),
     );
-    const [wEvm, wTron, wBtc, wSol] = S.wallets;
+    const [wEvm, wTron, wBtc, wSol, , wPixel, wNimbus, wAcmeLtc] = S.wallets;
 
     // chains
     const RPC_DEFAULT = {
@@ -643,6 +667,19 @@ export function createAdminMock(ctx) {
     if (btcTest) {
       btcTest.last_head = btcTest.sim_head;
       btcTest.scan_cursor = btcTest.sim_head - 15;
+    }
+
+    // merchant wallets: Pixel Forge keeps its EVM funds apart, Nimbus VPN its
+    // Tron funds; Litecoin has no default wallet, only Acme receives there.
+    const merchantId = (name) => S.merchants.find((m) => m.name === name).id;
+    for (const [name, wallet, chains, age] of [
+      ["Pixel Forge Games", wPixel, ["ethereum", "polygon", "base"], 50],
+      ["Nimbus VPN", wNimbus, ["tron"], 45],
+      ["Acme Coffee Roasters", wAcmeLtc, ["litecoin"], 20],
+    ]) {
+      for (const chain_id of chains) {
+        S.merchantWallets.push({ merchant_id: merchantId(name), chain_id, wallet_id: wallet.id, created_at: iso(t0 - age * DAY), updated_at: iso(t0 - age * DAY) });
+      }
     }
 
     // assets
@@ -1153,7 +1190,7 @@ export function createAdminMock(ctx) {
     let asset = null;
     if (body.asset_id) {
       asset = ASSETS.find((x) => x.id === body.asset_id);
-      if (!asset || !isAssetPayable(asset)) throw unprocessable("asset is not payable right now", { asset_id: "not payable right now" });
+      if (!asset || !isAssetPayable(asset, m.id)) throw unprocessable("asset is not payable right now", { asset_id: "not payable right now" });
     }
     const currency = body.currency.toUpperCase();
     if (body.order_id) {
@@ -1163,8 +1200,7 @@ export function createAdminMock(ctx) {
         throw conflict("order_id was already used with a different amount or currency", { order_id: "already used with a different amount or currency" });
       }
     }
-    const chain = asset ? S.chains.find((c) => c.id === asset.chain_id) : null;
-    const wallet = chain ? S.wallets.find((w) => w.id === chain.wallet_id) : null;
+    const wallet = asset ? resolveWallet(m.id, asset.chain_id) : null;
     const inv = ctx.createInvoice({
       merchant_id: m.id,
       merchant_name: m.name,
@@ -1288,7 +1324,42 @@ export function createAdminMock(ctx) {
       return { status: 201, body: { merchant: publicMerchant(m), webhook_secret: secret } };
     }
     const m = findMerchant(id);
-    if (!sub && method === "GET") return { body: { merchant: publicMerchant(m), api_keys: m.api_keys.map(publicKey) } };
+    if (!sub && method === "GET") {
+      const order = (b) => {
+        const c = CHAINS[b.chain_id];
+        return `${c.testnet ? 1 : 0}${c.name}`;
+      };
+      const wallets = S.merchantWallets.filter((b) => b.merchant_id === m.id).sort((a, b) => order(a).localeCompare(order(b)));
+      return { body: { merchant: publicMerchant(m), api_keys: m.api_keys.map(publicKey), wallets: wallets.map(merchantWalletView) } };
+    }
+    if (sub === "wallets" && keyId && (method === "PUT" || method === "DELETE")) {
+      const c = findChain(keyId);
+      const family = CHAINS[c.id].family;
+      const existing = S.merchantWallets.find((b) => b.merchant_id === m.id && b.chain_id === c.id);
+      if (method === "DELETE") {
+        if (existing) {
+          S.merchantWallets = S.merchantWallets.filter((b) => b !== existing);
+          audit(user, "merchant.wallet.unset", "merchant", m.id, { chain_id: c.id, wallet_id: existing.wallet_id }, ip);
+        }
+        return { status: 204 };
+      }
+      const walletId = typeof body?.wallet_id === "string" ? body.wallet_id.trim() : "";
+      const w = S.wallets.find((x) => x.id === walletId);
+      if (!walletId) throw bad("invalid merchant wallet", { wallet_id: "is required" });
+      if (!w) throw bad("invalid merchant wallet", { wallet_id: "unknown wallet" });
+      if (w.family !== family) throw bad("invalid merchant wallet", { wallet_id: `the wallet is a ${w.family} wallet, the chain needs a ${family} wallet` });
+      if (w.kind === "static" && !staticAddressValidOn(w.address, c.id)) throw bad("invalid merchant wallet", { wallet_id: `the wallet's address is not valid on ${CHAINS[c.id].name}` });
+      const t = iso(now());
+      const previous = existing ? existing.wallet_id : null;
+      if (existing) {
+        existing.wallet_id = w.id;
+        existing.updated_at = t;
+      } else {
+        S.merchantWallets.push({ merchant_id: m.id, chain_id: c.id, wallet_id: w.id, created_at: t, updated_at: t });
+      }
+      audit(user, "merchant.wallet.set", "merchant", m.id, { chain_id: c.id, wallet_id: w.id, wallet_name: w.name, previous_wallet_id: previous }, ip);
+      return { body: merchantWalletView(S.merchantWallets.find((b) => b.merchant_id === m.id && b.chain_id === c.id)) };
+    }
     if (!sub && method === "PATCH") {
       const fields = {};
       const changes = {};
@@ -1339,6 +1410,14 @@ export function createAdminMock(ctx) {
   }
 
   // ---- chains --------------------------------------------------------------------
+
+  /** UTXO addresses belong to one network (bc1… / ltc1… / tb1…); other families share one format. */
+  function staticAddressValidOn(address, chainId) {
+    if (CHAINS[chainId].family !== "utxo") return true;
+    if (chainId === "litecoin") return /^(ltc1|[LM])/.test(address);
+    if (CHAINS[chainId].testnet) return /^(tb1|[mn2])/.test(address);
+    return /^(bc1|[13])/.test(address);
+  }
 
   function findChain(id) {
     const c = S.chains.find((x) => x.id === id);
@@ -1410,15 +1489,19 @@ export function createAdminMock(ctx) {
     throw notFound("endpoint");
   }
 
-  /** Checkout hides assets that are disabled here or whose chain isn't payable. */
-  function isAssetPayable(asset) {
+  /**
+   * Checkout hides assets that are disabled here, or whose chain is disabled /
+   * has no receiving wallet for the invoice's merchant (its own wallet, else
+   * the chain's default wallet).
+   */
+  function isAssetPayable(asset, merchantId) {
     if (!S) return true;
     const a = S.assets.find((x) => x.id === asset.id);
     if (a && !a.enabled) return false;
     const c = S.chains.find((x) => x.id === asset.chain_id);
     if (!c) return true;
     const urls = c.rpc_db.length || c.rpc_env.length || c.rpc_default.length;
-    return c.enabled && Boolean(c.wallet_id) && Boolean(urls);
+    return c.enabled && Boolean(resolveWallet(merchantId, c.id)) && Boolean(urls);
   }
 
   // ---- assets ----------------------------------------------------------------------
@@ -1552,7 +1635,8 @@ export function createAdminMock(ctx) {
     }
     if (!id && method === "POST") {
       const value = validateWalletInput(body, { requireName: true });
-      if (S.wallets.some((w) => (w.kind === "xpub" ? w.xpub : w.address) === value)) throw conflict("this key or address is already registered", { [body.kind === "xpub" ? "xpub" : "address"]: "already registered" });
+      const dup = S.wallets.find((w) => (body.kind === "xpub" ? w.kind === "xpub" && w.xpub === value : w.kind === "static" && w.family === body.family && w.address.toLowerCase() === value.toLowerCase()));
+      if (dup) throw conflict("this key or address is already registered", { [body.kind === "xpub" ? "xpub" : "address"]: `is already registered as wallet "${dup.name}"` });
       const w = {
         id: randomUUID(),
         name: body.name.trim(),
@@ -1577,6 +1661,11 @@ export function createAdminMock(ctx) {
       return { body: walletView(w) };
     }
     if (method === "DELETE") {
+      const bound = S.merchantWallets.filter((b) => b.wallet_id === w.id);
+      if (bound.length) {
+        const names = bound.map((b) => `"${S.merchants.find((m) => m.id === b.merchant_id)?.name}" on ${b.chain_id}`).join(", ");
+        throw conflict(`the wallet is the receiving wallet of merchant ${names}; switch those merchants back to the default wallet (or to another wallet) first`);
+      }
       if (w.used) throw conflict("wallet is referenced by quotes and cannot be deleted");
       for (const c of S.chains) if (c.wallet_id === w.id) c.wallet_id = null;
       S.wallets = S.wallets.filter((x) => x.id !== w.id);

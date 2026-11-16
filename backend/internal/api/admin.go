@@ -69,6 +69,8 @@ func (a *API) adminRoutes(r chi.Router) {
 			r.Post("/merchants/{id}/api-keys", a.adminCreateAPIKey)
 			r.Delete("/merchants/{id}/api-keys/{key_id}", a.adminRevokeAPIKey)
 			r.Post("/merchants/{id}/webhook-secret", a.adminRotateWebhookSecret)
+			r.Put("/merchants/{id}/wallets/{chain_id}", a.adminSetMerchantWallet)
+			r.Delete("/merchants/{id}/wallets/{chain_id}", a.adminUnsetMerchantWallet)
 
 			r.Get("/chains", a.adminListChains)
 			r.Patch("/chains/{id}", a.adminUpdateChain)

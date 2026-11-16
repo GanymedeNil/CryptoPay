@@ -101,7 +101,7 @@ func (s *Service) Create(ctx context.Context, merchant domain.Merchant, p Create
 
 	var plan *quotePlan
 	if assetID := strings.TrimSpace(p.AssetID); assetID != "" {
-		qp, err := s.plan(ctx, assetID, inv.PriceCurrency)
+		qp, err := s.plan(ctx, merchant.ID, assetID, inv.PriceCurrency)
 		if err != nil {
 			return view, false, err
 		}

@@ -149,6 +149,8 @@ describe("endpoint modules", () => {
       walletconnect_project_id: "",
     });
     await api.listTransfers({ matched: false });
+    await api.setMerchantWallet("m1", "tron-nile", { wallet_id: "w1" });
+    await api.unsetMerchantWallet("m1", "tron-nile");
     expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
       "POST /api/admin/auth/login",
       "GET /api/admin/invoices?status=paid&page=2&q=0xabc",
@@ -156,9 +158,13 @@ describe("endpoint modules", () => {
       "PATCH /api/admin/chains/tron",
       "PUT /api/admin/settings",
       "GET /api/admin/transfers?matched=false",
+      "PUT /api/admin/merchants/m1/wallets/tron-nile",
+      "DELETE /api/admin/merchants/m1/wallets/tron-nile",
     ]);
     expect(calls[3].body).toBe('{"enabled":false,"wallet_id":null}');
     expect(calls[2].headers["X-Requested-With"]).toBe("cryptopay");
+    expect(calls[6].body).toBe('{"wallet_id":"w1"}');
+    expect(calls[7].headers["X-Requested-With"]).toBe("cryptopay");
   });
 
   it("merchant: bearer auth on every request", async () => {

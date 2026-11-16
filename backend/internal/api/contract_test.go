@@ -141,8 +141,11 @@ func TestContractResponses(t *testing.T) {
 	m := c.ok("POST /api/admin/merchants", owner.post("/merchants", map[string]any{"name": "Contract Shop", "webhook_url": "https://shop.example/h"}))
 	mid := m["merchant"].(map[string]any)["id"].(string)
 	key := c.ok("POST /api/admin/merchants/{id}/api-keys", owner.post("/merchants/"+mid+"/api-keys", map[string]any{"name": "k"}))
+	c.ok("PUT /api/admin/merchants/{id}/wallets/{chain_id}", owner.put("/merchants/"+mid+"/wallets/tron",
+		map[string]any{"wallet_id": h.TronWallet.ID.String()}))
 	md := c.ok("GET /api/admin/merchants/{id}", owner.get("/merchants/"+mid))
 	nonEmpty(t, md, "api_keys")
+	nonEmpty(t, md, "wallets")
 	c.ok("PATCH /api/admin/merchants/{id}", owner.patch("/merchants/"+mid, map[string]any{"name": "Contract Shop 2"}))
 	c.ok("POST /api/admin/merchants/{id}/webhook-secret", owner.post("/merchants/"+mid+"/webhook-secret", nil))
 	c.ok("DELETE /api/admin/merchants/{id}/api-keys/{key_id}",
@@ -158,10 +161,20 @@ func TestContractResponses(t *testing.T) {
 		"contract_address": "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063", "decimals": 18, "quote_precision": 2,
 		"rate_key": "dai", "is_stablecoin": true}))
 	c.ok("PATCH /api/admin/assets/{id}", owner.patch("/assets/dai-polygon", map[string]any{"enabled": false}))
-	nonEmpty(t, c.ok("GET /api/admin/wallets", owner.get("/wallets")), "items")
+	wallets := c.ok("GET /api/admin/wallets", owner.get("/wallets"))
+	nonEmpty(t, wallets, "items")
+	bound := false
+	for _, x := range wallets["items"].([]any) {
+		if bs, _ := x.(map[string]any)["merchant_bindings"].([]any); len(bs) > 0 {
+			bound = true
+		}
+	}
+	require.True(t, bound, "a wallet with merchant bindings makes the contract check meaningful")
+	c.ok("DELETE /api/admin/merchants/{id}/wallets/{chain_id}", owner.del("/merchants/"+mid+"/wallets/tron"))
 	tronXpub := hdwallettest.AccountXpub(invoicetest.Mnemonic, "m/44'/195'/0'")
 	c.ok("POST /api/admin/wallets/preview", owner.post("/wallets/preview", map[string]any{"family": "tron", "kind": "xpub", "xpub": tronXpub, "chain_id": "tron"}))
 	w := c.ok("POST /api/admin/wallets", owner.post("/wallets", map[string]any{"name": "Tron xpub", "family": "tron", "kind": "xpub", "xpub": tronXpub}))
+	c.fail("wallet 409 duplicate key", owner.post("/wallets", map[string]any{"name": "Again", "family": "tron", "kind": "xpub", "xpub": tronXpub}), http.StatusConflict)
 	c.ok("PATCH /api/admin/wallets/{id}", owner.patch("/wallets/"+w["id"].(string), map[string]any{"name": "Tron xpub 2"}))
 	c.ok("DELETE /api/admin/wallets/{id}", owner.del("/wallets/"+w["id"].(string)))
 

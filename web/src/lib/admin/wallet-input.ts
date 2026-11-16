@@ -63,3 +63,26 @@ export function looksLikeAddress(family: Family, value: string, chainId?: string
       return /^(bc1[02-9ac-hj-np-z]{8,87}|[13][1-9A-HJ-NP-Za-km-z]{25,34}|ltc1[02-9ac-hj-np-z]{8,87}|tb1[02-9ac-hj-np-z]{8,87}|[LMmn2][1-9A-HJ-NP-Za-km-z]{25,34})$/.test(v);
   }
 }
+
+/**
+ * The registered wallet that already holds this key material, if any — the
+ * backend refuses duplicates (409) because two wallets with one key would
+ * hand out the same addresses: an xpub is unique across families, a static
+ * address per family (EVM compared case-insensitively, as EIP-55 only
+ * changes the case).
+ */
+export function findDuplicateWallet<W extends { family: Family; kind: WalletKind; xpub: string; address: string }>(
+  wallets: readonly W[] | undefined,
+  family: Family,
+  kind: WalletKind,
+  key: string,
+): W | undefined {
+  const k = key.trim();
+  if (!k) return undefined;
+  return (wallets ?? []).find((w) => {
+    if (w.kind !== kind) return false;
+    if (kind === "xpub") return w.xpub === k;
+    if (w.family !== family) return false;
+    return family === "evm" ? w.address.toLowerCase() === k.toLowerCase() : w.address === k;
+  });
+}

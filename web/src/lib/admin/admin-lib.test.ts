@@ -3,15 +3,15 @@ import { ApiError } from "@/lib/api/client";
 import type { InvoiceDetail } from "@/lib/api/types";
 import { createTranslator } from "@/lib/i18n/translate";
 import { quote, transfer } from "@/test/fixtures";
-import { chainFixture } from "@/test/admin";
-import { chainHealth, isMaskedRpcUrl, isRpcUrl, notPayableReasons, rpcEnvName, splitByNetwork } from "./chains";
+import { chainFixture, walletFixture } from "@/test/admin";
+import { chainHealth, isMaskedRpcUrl, isRpcUrl, notPayableReasons, receivesPayments, rpcEnvName, splitByNetwork } from "./chains";
 import { applyFieldErrors, describeError, errorKind } from "./errors";
 import { addressLink, fillExplorerTemplate, safeHttpUrl, txLink } from "./explorer";
 import { formToSettings, settingsSchema, settingsToForm } from "./settings-form";
 import { canWrite, isOwner } from "./roles";
 import { buildTimeline } from "./timeline";
 import { intParam, patchSearchParams } from "./url-state";
-import { kindsFor, looksLikeAddress, looksLikeSecret, looksLikeXpub } from "./wallet-input";
+import { findDuplicateWallet, kindsFor, looksLikeAddress, looksLikeSecret, looksLikeXpub } from "./wallet-input";
 import { SETTINGS } from "@/test/admin";
 
 const t = createTranslator("en");
@@ -85,6 +85,13 @@ describe("chains", () => {
       "noRpc",
     ]);
     expect(notPayableReasons(chainFixture())).toEqual([]);
+    // No default wallet, but merchants with their own wallet are still paid.
+    const merchantOnly = chainFixture({ payable: false, wallet_id: null, merchant_wallets: 2 });
+    expect(notPayableReasons(merchantOnly)).toEqual(["noWallet"]);
+    expect(receivesPayments(merchantOnly)).toBe(true);
+    expect(receivesPayments(chainFixture({ payable: false, wallet_id: null }))).toBe(false);
+    expect(receivesPayments(chainFixture({ payable: false, enabled: false, wallet_id: null, merchant_wallets: 2 }))).toBe(false);
+    expect(receivesPayments(chainFixture())).toBe(true);
     const { mainnet, testnet } = splitByNetwork([chainFixture(), chainFixture({ id: "sepolia", is_testnet: true })]);
     expect(mainnet.map((c) => c.id)).toEqual(["ethereum"]);
     expect(testnet.map((c) => c.id)).toEqual(["sepolia"]);
@@ -125,6 +132,21 @@ describe("wallet input", () => {
     expect(looksLikeAddress("tron", "TNPeeaaFB7K9cmo4uQpcU32zGK8G1NYqeL")).toBe(true);
     expect(looksLikeAddress("utxo", "ltc1qg82tzq6kp7fpmt9s7ad8r3yyysk7qwn8xr6aen", "litecoin")).toBe(true);
     expect(looksLikeAddress("utxo", "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq", "litecoin")).toBe(false);
+  });
+
+  it("finds wallets that already hold the key material (the server refuses duplicates)", () => {
+    const xpub = walletFixture({ id: "x", xpub: "xpubAAA" });
+    const evm = walletFixture({ id: "e", kind: "static", xpub: "", address: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e" });
+    const tron = walletFixture({ id: "t", family: "tron", kind: "static", xpub: "", address: "TNPeeaaFB7K9cmo4uQpcU32zGK8G1NYqeL" });
+    const all = [xpub, evm, tron];
+    expect(findDuplicateWallet(all, "evm", "xpub", " xpubAAA ")?.id).toBe("x");
+    expect(findDuplicateWallet(all, "tron", "xpub", "xpubAAA")?.id).toBe("x"); // one key, any family
+    expect(findDuplicateWallet(all, "evm", "xpub", "xpubBBB")).toBeUndefined();
+    expect(findDuplicateWallet(all, "evm", "static", "0x742d35cc6634c0532925a3b844bc454e4438f44e")?.id).toBe("e"); // EIP-55 case
+    expect(findDuplicateWallet(all, "tron", "static", "TNPeeaaFB7K9cmo4uQpcU32zGK8G1NYqeL")?.id).toBe("t");
+    expect(findDuplicateWallet(all, "solana", "static", "TNPeeaaFB7K9cmo4uQpcU32zGK8G1NYqeL")).toBeUndefined(); // per family
+    expect(findDuplicateWallet(all, "evm", "static", "")).toBeUndefined();
+    expect(findDuplicateWallet(undefined, "evm", "xpub", "xpubAAA")).toBeUndefined();
   });
 });
 

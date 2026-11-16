@@ -373,14 +373,14 @@ function tick(inv) {
   }
 }
 
-/** Set by the admin mock: assets disabled (or on unpayable chains) in the console are hidden. */
+/** Set by the admin mock: assets disabled in the console, or without a receiving wallet for the invoice's merchant, are hidden. */
 let isAssetPayable = () => true;
 
 function checkoutView(inv) {
   tick(inv);
   const assets = inv.no_assets
     ? []
-    : ASSETS.filter((a) => (inv.show_testnets || !a.is_testnet) && isAssetPayable(a)).map(({ precision, ...a }) => ({
+    : ASSETS.filter((a) => (inv.show_testnets || !a.is_testnet) && isAssetPayable(a, inv.merchant_id)).map(({ precision, ...a }) => ({
         ...a,
         estimated_amount: estimate(inv, { ...a, precision }),
       }));
@@ -603,7 +603,7 @@ const server = createServer(async (req, res) => {
           return apiError(res, 409, "conflict", "funds already detected on another quote");
         }
         const asset = ASSETS.find((a) => a.id === body.asset_id);
-        if (!asset || inv.no_assets || (!inv.show_testnets && asset.is_testnet) || !isAssetPayable(asset)) {
+        if (!asset || inv.no_assets || (!inv.show_testnets && asset.is_testnet) || !isAssetPayable(asset, inv.merchant_id)) {
           return apiError(res, 422, "unprocessable", "asset unavailable");
         }
         if (inv.quote?.asset_id !== asset.id) {

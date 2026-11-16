@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -10,10 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil/base58"
+	"github.com/btcsuite/btcd/btcutil/hdkeychain"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 	"golang.org/x/crypto/bcrypt"
 
+	"cryptopay/internal/address"
 	"cryptopay/internal/auth"
 	"cryptopay/internal/domain"
 	"cryptopay/internal/store"
@@ -128,6 +132,50 @@ func Session(t testing.TB, s *store.Store, userID uuid.UUID, mods ...func(*domai
 // pass your own via mods when derivation matters.
 const TestXpub = "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8"
 
+// UniqueXpub returns a valid extended public key no other call returns (a
+// child of TestXpub at a process-unique index): wallets must not share key
+// material (store.ConstraintWalletXpub).
+func UniqueXpub() string {
+	k, err := hdkeychain.NewKeyFromString(TestXpub)
+	if err != nil {
+		panic(err)
+	}
+	child, err := k.Derive(uint32(nextSeq()) % hdkeychain.HardenedKeyStart)
+	if err != nil {
+		panic(err) // astronomically unlikely invalid child: never for the indices used in tests
+	}
+	return child.String()
+}
+
+// StaticAddress returns the n-th (n ≥ 1) generated canonical receiving
+// address of a family, distinct from StaticAddresses[family] and from every
+// other n: for a second static wallet of one family (static addresses are
+// unique per family, store.ConstraintWalletStaticAddress). UTXO addresses
+// are Bitcoin mainnet (bc1…) P2WPKH.
+func StaticAddress(family domain.Family, n int) string {
+	h := sha256.Sum256([]byte(fmt.Sprintf("storetest static address %s %d", family, n)))
+	var (
+		out string
+		err error
+	)
+	switch family {
+	case domain.FamilyEVM:
+		out, err = address.EVMFromBytes(h[:20])
+	case domain.FamilyTron:
+		out, err = address.TronFromBytes(h[:20])
+	case domain.FamilyUTXO:
+		out, err = address.SegwitEncode("bc", 0, h[:20])
+	case domain.FamilySolana:
+		out = base58.Encode(h[:])
+	default:
+		err = fmt.Errorf("unknown family %q", family)
+	}
+	if err != nil {
+		panic(fmt.Sprintf("storetest: static address: %v", err))
+	}
+	return out
+}
+
 // StaticAddresses are default static receiving addresses per family.
 var StaticAddresses = map[domain.Family]string{
 	domain.FamilyEVM:    "0x52908400098527886E0F7030069857D2E4169EE7",
@@ -136,13 +184,14 @@ var StaticAddresses = map[domain.Family]string{
 	domain.FamilySolana: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
 }
 
-// Wallet inserts a wallet of the given family and kind (xpub: TestXpub,
-// static: StaticAddresses[family]).
+// Wallet inserts a wallet of the given family and kind (xpub: a fresh
+// UniqueXpub, static: StaticAddresses[family] — a second static wallet of
+// the same family needs its own address, e.g. StaticAddress(family, n)).
 func Wallet(t testing.TB, s *store.Store, family domain.Family, kind domain.WalletKind, mods ...func(*domain.Wallet)) domain.Wallet {
 	t.Helper()
 	w := domain.Wallet{Name: fmt.Sprintf("%s %s wallet %d", family, kind, nextSeq()), Family: family, Kind: kind}
 	if kind == domain.WalletXpub {
-		w.Xpub = TestXpub
+		w.Xpub = UniqueXpub()
 	} else {
 		w.Address = StaticAddresses[family]
 	}
@@ -156,7 +205,8 @@ func Wallet(t testing.TB, s *store.Store, family domain.Family, kind domain.Wall
 	return out
 }
 
-// AssignWallet assigns a wallet to a chain (and makes sure the chain is enabled).
+// AssignWallet makes a wallet the default wallet of a chain (and makes sure
+// the chain is enabled).
 func AssignWallet(t testing.TB, s *store.Store, chainID string, walletID uuid.UUID) domain.Chain {
 	t.Helper()
 	c, err := s.UpdateChain(context.Background(), chainID, store.ChainUpdate{
@@ -166,6 +216,21 @@ func AssignWallet(t testing.TB, s *store.Store, chainID string, walletID uuid.UU
 		t.Fatalf("storetest: assign wallet: %v", err)
 	}
 	return c
+}
+
+// BindWallet makes a wallet the merchant's own receiving wallet on a chain
+// (and makes sure the chain is enabled).
+func BindWallet(t testing.TB, s *store.Store, merchantID uuid.UUID, chainID string, walletID uuid.UUID) store.MerchantWallet {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := s.UpdateChain(ctx, chainID, store.ChainUpdate{Enabled: Ptr(true)}); err != nil {
+		t.Fatalf("storetest: enable chain: %v", err)
+	}
+	b, err := s.SetMerchantWallet(ctx, merchantID, chainID, walletID)
+	if err != nil {
+		t.Fatalf("storetest: bind wallet: %v", err)
+	}
+	return b
 }
 
 // Invoice inserts a pending 10 USD invoice (AmountUSD 10) expiring 30

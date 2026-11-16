@@ -19,7 +19,8 @@ import (
 
 const chainCols = `c.id, c.family, c.name, c.network_id, c.native_symbol, c.is_testnet, c.enabled, c.rpc_urls_enc,
 	c.confirmations, c.poll_interval_ms, c.scan_batch, c.explorer_tx_url, c.explorer_addr_url, c.params::text,
-	c.wallet_id, c.scan_cursor, c.last_head, c.last_scan_at, c.last_error, c.created_at, c.updated_at`
+	c.wallet_id, (SELECT count(*) FROM merchant_wallets mw WHERE mw.chain_id = c.id),
+	c.scan_cursor, c.last_head, c.last_scan_at, c.last_error, c.created_at, c.updated_at`
 
 func (s *Store) scanChain(row pgx.Row) (domain.Chain, error) {
 	var c domain.Chain
@@ -27,7 +28,7 @@ func (s *Store) scanChain(row pgx.Row) (domain.Chain, error) {
 	var pollMS int64
 	err := row.Scan(&c.ID, &family, &c.Name, &c.NetworkID, &c.NativeSymbol, &c.IsTestnet, &c.Enabled, &enc,
 		&c.Confirmations, &pollMS, &c.ScanBatch, &c.ExplorerTxURL, &c.ExplorerAddr, &params,
-		&c.WalletID, u64Scan{&c.ScanCursor}, u64Scan{&c.LastHead}, &c.LastScanAt, &c.LastError, &c.CreatedAt, &c.UpdatedAt)
+		&c.WalletID, &c.MerchantWallets, u64Scan{&c.ScanCursor}, u64Scan{&c.LastHead}, &c.LastScanAt, &c.LastError, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return domain.Chain{}, err
 	}
@@ -95,8 +96,9 @@ type ChainUpdate struct {
 	Confirmations *int
 	PollInterval  *time.Duration
 	ScanBatch     *int
-	// SetWallet applies WalletID: a wallet id assigns that wallet (it must
-	// belong to the chain's family), nil unassigns.
+	// SetWallet applies WalletID: a wallet id makes that wallet the chain's
+	// default wallet (it must belong to the chain's family), nil unassigns.
+	// Merchant-specific wallets are set with SetMerchantWallet.
 	SetWallet bool
 	WalletID  *uuid.UUID
 }

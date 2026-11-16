@@ -181,16 +181,25 @@ func (s *system) login() *client {
 // receiver and an API key, through the admin API.
 func (s *system) onboardMerchant(admin *client, name string) (merchant *client, webhookSecret string) {
 	s.t.Helper()
+	merchant, webhookSecret, _ = s.onboardMerchantTo(admin, name, s.merchantRx)
+	return merchant, webhookSecret
+}
+
+// onboardMerchantTo is onboardMerchant with the merchant's own webhook
+// receiver; it also returns the merchant id.
+func (s *system) onboardMerchantTo(admin *client, name string, rx *receiver) (merchant *client, webhookSecret, id string) {
+	s.t.Helper()
 	var m struct {
 		Merchant      obj    `json:"merchant"`
 		WebhookSecret string `json:"webhook_secret"`
 	}
-	admin.call(http.MethodPost, "/api/admin/merchants", obj{"name": name, "webhook_url": s.merchantRx.URL()}, http.StatusCreated, &m)
+	admin.call(http.MethodPost, "/api/admin/merchants", obj{"name": name, "webhook_url": rx.URL()}, http.StatusCreated, &m)
+	id = m.Merchant["id"].(string)
 	var k struct {
 		Key string `json:"key"`
 	}
-	admin.call(http.MethodPost, "/api/admin/merchants/"+m.Merchant["id"].(string)+"/api-keys", obj{"name": "e2e"}, http.StatusCreated, &k)
-	return s.client(map[string]string{"Authorization": "Bearer " + k.Key}), m.WebhookSecret
+	admin.call(http.MethodPost, "/api/admin/merchants/"+id+"/api-keys", obj{"name": "e2e"}, http.StatusCreated, &k)
+	return s.client(map[string]string{"Authorization": "Bearer " + k.Key}), m.WebhookSecret, id
 }
 
 // receiver is the merchant's webhook endpoint.
@@ -489,4 +498,126 @@ func TestStaticWalletPaymentFlow(t *testing.T) {
 	admin.call(http.MethodGet, "/api/admin/audit-logs?action=transfer.assign", nil, http.StatusOK, &audit)
 	require.Len(t, audit.Items, 1)
 	assert.Equal(t, ownerEmail, audit.Items[0]["actor_email"])
+}
+
+// TestMerchantWalletsFlow: two merchants, each with its own xpub wallet on
+// Ethereum (which has no default wallet), sell at the same price in the same
+// asset. Each invoice is paid by the transfer to its own merchant's address
+// and each merchant receives the webhooks of its own invoice only.
+func TestMerchantWalletsFlow(t *testing.T) {
+	t.Parallel()
+	s := newSystem(t)
+	admin := s.login()
+	type shop struct {
+		name, path string
+		rx         *receiver
+		api        *client
+		secret, id string
+		walletID   string
+		first      string // first address of the shop's wallet on ethereum
+		invoice    obj
+		due        *big.Int
+	}
+	shops := []*shop{
+		{name: "Shop One", path: "m/44'/60'/1'", rx: newReceiver(t)},
+		{name: "Shop Two", path: "m/44'/60'/2'", rx: newReceiver(t)},
+	}
+	for _, sh := range shops {
+		xpub := hdwallettest.AccountXpub(invoicetest.Mnemonic, sh.path)
+		var preview struct {
+			Addresses []string `json:"addresses"`
+		}
+		admin.call(http.MethodPost, "/api/admin/wallets/preview", obj{"family": "evm", "kind": "xpub", "xpub": xpub, "chain_id": "ethereum"}, http.StatusOK, &preview)
+		sh.first = preview.Addresses[0]
+		var w obj
+		admin.call(http.MethodPost, "/api/admin/wallets", obj{"name": sh.name + " EVM", "family": "evm", "kind": "xpub", "xpub": xpub}, http.StatusCreated, &w)
+		sh.walletID = w["id"].(string)
+		sh.api, sh.secret, sh.id = s.onboardMerchantTo(admin, sh.name, sh.rx)
+		var mw obj
+		admin.call(http.MethodPut, "/api/admin/merchants/"+sh.id+"/wallets/ethereum", obj{"wallet_id": sh.walletID}, http.StatusOK, &mw)
+		assert.Equal(t, sh.name+" EVM", mw["wallet_name"])
+	}
+	require.NotEqual(t, shops[0].first, shops[1].first)
+	// The same key cannot be registered twice (it would hand out the same addresses).
+	admin.call(http.MethodPost, "/api/admin/wallets", obj{"name": "copy", "family": "evm", "kind": "xpub",
+		"xpub": hdwallettest.AccountXpub(invoicetest.Mnemonic, shops[0].path)}, http.StatusConflict, nil)
+	var chains struct {
+		Items []obj `json:"items"`
+	}
+	admin.call(http.MethodGet, "/api/admin/chains", nil, http.StatusOK, &chains)
+	for _, c := range chains.Items {
+		if c["id"] == "ethereum" {
+			assert.Nil(t, c["wallet_id"], "no default wallet")
+			assert.Equal(t, false, c["payable"])
+			assert.EqualValues(t, 2, c["merchant_wallets"])
+		}
+	}
+
+	// Same price, same asset, pre-selected: each gets its own wallet's first address.
+	for i, sh := range shops {
+		sh.api.call(http.MethodPost, "/api/v1/invoices", obj{"amount": "25", "currency": "USD", "order_id": fmt.Sprintf("MW-%d", i),
+			"asset_id": "usdt-ethereum"}, http.StatusCreated, &sh.invoice)
+		q := quoteOf(t, sh.invoice)
+		assert.Equal(t, sh.first, q["address"], sh.name)
+		assert.Equal(t, "25", q["amount"])
+		sh.due = baseUnits(t, q["amount_base"])
+	}
+	// A merchant without a wallet on ethereum cannot use it.
+	other, _ := s.onboardMerchant(admin, "No Wallet Shop")
+	var assets struct {
+		Items []obj `json:"items"`
+	}
+	other.call(http.MethodGet, "/api/v1/assets", nil, http.StatusOK, &assets)
+	for _, a := range assets.Items {
+		assert.NotEqual(t, "ethereum", a["chain_id"])
+	}
+	other.call(http.MethodPost, "/api/v1/invoices", obj{"amount": "25", "currency": "USD", "asset_id": "usdt-ethereum"}, http.StatusUnprocessableEntity, nil)
+
+	// The chain is scanned although it has no default wallet. Shop Two's
+	// customer pays first, then Shop One's.
+	eth := s.chains["ethereum"]
+	s.tick("ethereum")
+	eth.Pay(1001, "0xe2e0000000000000000000000000000000000000000000000000000000000002", shops[1].first, usdtEthereum, shops[1].due)
+	eth.SetHead(1001)
+	require.Equal(t, 1, s.tick("ethereum").NewTransfers)
+	eth.Pay(1002, "0xe2e0000000000000000000000000000000000000000000000000000000000001", shops[0].first, usdtEthereum, shops[0].due)
+	eth.SetHead(1002)
+	require.Equal(t, 1, s.tick("ethereum").NewTransfers)
+	eth.Advance(12) // ethereum needs 12 confirmations by default
+	require.Equal(t, 2, s.tick("ethereum").Confirmed)
+
+	for _, sh := range shops {
+		var inv obj
+		sh.api.call(http.MethodGet, "/api/v1/invoices/"+sh.invoice["id"].(string), nil, http.StatusOK, &inv)
+		assert.Equal(t, "paid", inv["status"], sh.name)
+		assert.Equal(t, "25", quoteOf(t, inv)["amount_confirmed"], sh.name)
+	}
+	s.deliver()
+	for _, sh := range shops {
+		got := sh.rx.verified(sh.secret, s.clock.Now()) // signed with this merchant's secret
+		require.NotEmpty(t, got, sh.name)
+		assert.ElementsMatch(t, []string{domain.EventConfirming, domain.EventPaid}, types(got), sh.name)
+		for _, b := range got {
+			assert.Equal(t, sh.invoice["id"], b.Data["id"], "%s only hears about its own invoice", sh.name)
+			assert.Equal(t, sh.id, b.Data["merchant_id"])
+		}
+	}
+
+	// The wallets page shows who uses each wallet; a used wallet cannot be deleted.
+	var ws struct {
+		Items []obj `json:"items"`
+	}
+	admin.call(http.MethodGet, "/api/admin/wallets", nil, http.StatusOK, &ws)
+	require.Len(t, ws.Items, 2)
+	for _, w := range ws.Items {
+		bs := w["merchant_bindings"].([]any)
+		require.Len(t, bs, 1)
+		assert.EqualValues(t, 1, w["next_index"])
+	}
+	admin.call(http.MethodDelete, "/api/admin/wallets/"+shops[0].walletID, nil, http.StatusConflict, nil)
+	var audit struct {
+		Items []obj `json:"items"`
+	}
+	admin.call(http.MethodGet, "/api/admin/audit-logs?action=merchant.wallet.set", nil, http.StatusOK, &audit)
+	assert.Len(t, audit.Items, 2)
 }

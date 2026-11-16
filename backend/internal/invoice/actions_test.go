@@ -478,7 +478,7 @@ func TestCheckout(t *testing.T) {
 	assert.Equal(t, e.Clock.Now(), c.Now)
 	assert.Equal(t, domain.InvoicePartial, c.Status)
 	require.Len(t, c.Transfers, 1)
-	payable, err := e.Store.ListPayableAssets(e.Ctx)
+	payable, err := e.Store.ListPayableAssets(e.Ctx, e.Merchant.ID)
 	require.NoError(t, err)
 	assert.Len(t, c.Estimates, len(payable))
 

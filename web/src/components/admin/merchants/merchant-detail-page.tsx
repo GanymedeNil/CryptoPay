@@ -39,6 +39,7 @@ import { ErrorState } from "../states";
 import { MerchantStatusBadge, StatusBadge } from "../status-badge";
 import { RelativeTime } from "../time";
 import { IntegrationSnippet } from "./integration-snippet";
+import { MerchantWallets } from "./merchant-wallets";
 
 export function MerchantDetailPage({ id }: { id: string }) {
   const t = useT();
@@ -95,6 +96,7 @@ export function MerchantDetailPage({ id }: { id: string }) {
         <ProfileForm key={m.updated_at} merchant={m} />
         <WebhookSecret merchant={m} />
         <ApiKeys merchantId={m.id} keys={q.data.api_keys} className="xl:col-span-2" />
+        <MerchantWallets merchantId={m.id} bindings={q.data.wallets ?? []} className="xl:col-span-2" />
         <div className="xl:col-span-2">
           <IntegrationSnippet />
         </div>

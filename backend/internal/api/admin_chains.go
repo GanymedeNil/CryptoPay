@@ -173,8 +173,8 @@ func (a *API) adminUpdateChain(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, newChainJSON(out))
 }
 
-// checkWalletForChain returns why wallet wid cannot be assigned to chain c
-// ("" when it can).
+// checkWalletForChain returns why wallet wid cannot be used on chain c —
+// as its default wallet or as a merchant's own wallet — ("" when it can).
 func (a *API) checkWalletForChain(ctx context.Context, c domain.Chain, wid uuid.UUID) string {
 	wal, err := a.store.GetWallet(ctx, wid)
 	if errors.Is(err, store.ErrNotFound) {
@@ -621,18 +621,46 @@ func (a *API) adminCreateWallet(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		out = store.WalletView{Wallet: wal, ChainIDs: []string{}}
+		out = store.WalletView{Wallet: wal, ChainIDs: []string{}, MerchantBindings: []store.WalletBinding{}}
 		detail := map[string]any{"name": name, "family": string(family), "kind": string(kind)}
 		if addr != "" {
 			detail["address"] = addr
 		}
 		return a.audit(ctx, tx, nil, auditEntry{Action: "wallet.create", TargetType: "wallet", TargetID: wal.ID.String(), Detail: detail})
 	})
-	if err != nil {
+	switch {
+	case store.IsConstraint(err, store.ConstraintWalletXpub):
+		a.fail(w, r, &Error{Status: http.StatusConflict, Code: CodeConflict,
+			Message: "this extended public key is already registered: two wallets with the same key would hand out the same addresses",
+			Fields:  map[string]string{"xpub": "is already registered" + a.existingWalletName(ctx, func(x store.WalletView) bool { return x.Kind == domain.WalletXpub && x.Xpub == xpub })}})
+		return
+	case store.IsConstraint(err, store.ConstraintWalletStaticAddress):
+		a.fail(w, r, &Error{Status: http.StatusConflict, Code: CodeConflict,
+			Message: "this address is already registered as a static wallet",
+			Fields: map[string]string{"address": "is already registered" + a.existingWalletName(ctx, func(x store.WalletView) bool {
+				return x.Kind == domain.WalletStatic && x.Family == family && x.Address == addr
+			})}})
+		return
+	case err != nil:
 		a.fail(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, newWalletJSON(out))
+}
+
+// existingWalletName returns ` as wallet "<name>"` for the first wallet
+// matching, or "" (best effort, for conflict messages).
+func (a *API) existingWalletName(ctx context.Context, match func(store.WalletView) bool) string {
+	ws, err := a.store.ListWallets(ctx)
+	if err != nil {
+		return ""
+	}
+	for _, x := range ws {
+		if match(x) {
+			return fmt.Sprintf(" as wallet %q", x.Name)
+		}
+	}
+	return ""
 }
 
 // normalizeStatic returns the canonical form of a static address valid on
@@ -706,6 +734,9 @@ func (a *API) adminDeleteWallet(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		chainIDs = wv.ChainIDs
+		if len(wv.MerchantBindings) > 0 {
+			return errConflict(walletBoundMessage(wv.MerchantBindings))
+		}
 		if err := tx.DeleteWallet(ctx, id); err != nil {
 			return err
 		}
@@ -713,7 +744,7 @@ func (a *API) adminDeleteWallet(w http.ResponseWriter, r *http.Request) {
 			Detail: map[string]any{"name": wv.Name, "family": string(wv.Family), "kind": string(wv.Kind), "unassigned_chains": wv.ChainIDs}})
 	})
 	if errors.Is(err, store.ErrInUse) {
-		a.fail(w, r, errConflict("the wallet is referenced by quotes and cannot be deleted"))
+		a.fail(w, r, errConflict("the wallet is referenced by quotes or merchant wallets and cannot be deleted"))
 		return
 	}
 	if err != nil {
@@ -726,4 +757,22 @@ func (a *API) adminDeleteWallet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	noContent(w)
+}
+
+// walletBoundMessage explains why a wallet used by merchants cannot be deleted.
+func walletBoundMessage(bs []store.WalletBinding) string {
+	const shown = 3
+	parts := make([]string, 0, shown)
+	for i, b := range bs {
+		if i == shown {
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%q on %s", b.MerchantName, b.ChainID))
+	}
+	more := ""
+	if len(bs) > shown {
+		more = fmt.Sprintf(" and %d more", len(bs)-shown)
+	}
+	return "the wallet is the receiving wallet of merchant " + strings.Join(parts, ", ") + more +
+		"; switch those merchants back to the default wallet (or to another wallet) first"
 }

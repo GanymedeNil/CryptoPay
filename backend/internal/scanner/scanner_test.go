@@ -977,6 +977,11 @@ func TestRunFollowsConfigAndStopsCleanly(t *testing.T) {
 	storetest.AssignWallet(t, h.Store, "base", h.EVMWallet.ID)
 	eventually(t, "tron resumed", func() bool { return tron.HeadCalls() > calls })
 	eventually(t, "base started", func() bool { return h.chain("base").ScanCursor == 77 })
+	// A chain without a default wallet starts once a merchant has its own wallet there.
+	arb := scannertest.NewFakeChain(88)
+	h.Provider.Set("arbitrum", arb)
+	h.merchantWithWallet("arbitrum", "m/44'/60'/1'")
+	eventually(t, "arbitrum started", func() bool { return h.chain("arbitrum").ScanCursor == 88 })
 
 	// The expiry ticker runs too.
 	v := h.Create("10", "USD")

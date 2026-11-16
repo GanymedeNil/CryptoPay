@@ -115,7 +115,7 @@ Auth: `Authorization: Bearer <api key>` (`sk_live_…`). 401 on a missing/revoke
 | `GET /api/v1/invoices/{id}` | | `Invoice` |
 | `GET /api/v1/invoices` | `status?`, `order_id?`, paging | `Page<Invoice>` |
 | `POST /api/v1/invoices/{id}/cancel` | | `Invoice` (409 unless status is `pending`) |
-| `GET /api/v1/assets` | | `{ items: AssetInfo[] }` (payable right now) |
+| `GET /api/v1/assets` | | `{ items: AssetInfo[] }` (payable right now for this merchant: asset and chain enabled and a receiving wallet on the chain — the merchant's own, else the chain's default) |
 
 ```ts
 interface CreateInvoice {
@@ -157,7 +157,7 @@ interface CheckoutView {
     success_url: string; cancel_url: string;
     expires_at: string; paid_at: string | null; created_at: string;
   };
-  assets: CheckoutAsset[];       // every asset payable right now, sorted
+  assets: CheckoutAsset[];       // every asset payable right now for the invoice's merchant, sorted
   quote: Quote | null;           // active quote (or the paid one)
   transfers: Transfer[];         // transfers credited to this invoice, newest first
   walletconnect_project_id: string; // "" when not configured
@@ -183,7 +183,15 @@ interface AdminUser { id: string; email: string; role: "owner"|"admin"|"viewer";
 interface Merchant { id: string; name: string; status: "active"|"disabled"; webhook_url: string; has_webhook_secret: boolean; created_at: string; updated_at: string; }
 interface ApiKey { id: string; merchant_id: string; name: string; prefix: string; last_used_at: string|null; revoked_at: string|null; created_at: string; }
 
-interface Wallet { id: string; name: string; family: Family; kind: WalletKind; xpub: string; address: string; next_index: number; chain_ids: string[]; created_at: string; }
+interface Wallet {
+  id: string; name: string; family: Family; kind: WalletKind; xpub: string; address: string; next_index: number;
+  chain_ids: string[];           // chains this wallet is the default wallet of
+  merchant_bindings: { merchant_id: string; merchant_name: string; chain_id: string }[];  // merchants using it as their own wallet
+  created_at: string;
+}
+
+// A merchant's own receiving wallet on one chain (overrides the chain's default wallet for that merchant).
+interface MerchantWallet { chain_id: string; wallet_id: string; wallet_name: string; kind: WalletKind; }
 
 interface Chain {
   id: string; family: Family; name: string; network_id: string; native_symbol: string;
@@ -192,10 +200,11 @@ interface Chain {
   rpc_source: "database"|"env"|"default";
   confirmations: number; poll_interval_ms: number; scan_batch: number;
   explorer_tx_url: string; explorer_addr_url: string;
-  wallet_id: string | null;
+  wallet_id: string | null;      // the chain's DEFAULT wallet (merchants without their own wallet)
   scan_cursor: number; last_head: number; lag: number;   // last_head - scan_cursor
   last_scan_at: string | null; last_error: string;
-  payable: boolean;              // enabled && wallet assigned && rpc configured
+  payable: boolean;              // enabled && default wallet assigned && rpc configured
+  merchant_wallets: number;      // merchants with their own wallet on this chain (they can be paid even when payable is false)
 }
 
 interface Asset extends AssetInfo { quote_precision: number; rate_key: string; enabled: boolean; sort_order: number; rate_usd: string | null; }
@@ -244,22 +253,24 @@ interface Overview {
 | `POST /transfers/{id}/assign` | `{ invoice_id: string }` | `Transfer` (only for unmatched transfers; the invoice must have a quote for the same asset) |
 | `GET /merchants` | `q?`, paging | `Page<Merchant>` |
 | `POST /merchants` | `{ name, webhook_url? }` | `201 { merchant: Merchant; webhook_secret: string }` (secret shown once) |
-| `GET /merchants/{id}` | | `{ merchant: Merchant; api_keys: ApiKey[] }` |
+| `GET /merchants/{id}` | | `{ merchant: Merchant; api_keys: ApiKey[]; wallets: MerchantWallet[] }` (`wallets`: explicit bindings only) |
 | `PATCH /merchants/{id}` | `{ name?, status?, webhook_url? }` | `Merchant` |
 | `POST /merchants/{id}/api-keys` | `{ name }` | `201 { api_key: ApiKey; key: string }` (plaintext shown once) |
 | `DELETE /merchants/{id}/api-keys/{key_id}` | | `204` (revokes) |
 | `POST /merchants/{id}/webhook-secret` | | `{ webhook_secret: string }` (rotates) |
+| `PUT /merchants/{id}/wallets/{chain_id}` | `{ wallet_id: string }` | `MerchantWallet` (insert or replace; 400 `fields.wallet_id` for an unknown wallet, a wallet of another family or a static address not valid on the chain; 404 unknown merchant or chain) |
+| `DELETE /merchants/{id}/wallets/{chain_id}` | | `204` (the merchant falls back to the chain's default wallet; idempotent; 404 unknown merchant or chain) |
 | `GET /chains` | | `{ items: Chain[] }` |
-| `PATCH /chains/{id}` | `{ enabled?, rpc_urls? (string[]; [] resets to env/default), confirmations?, poll_interval_ms?, scan_batch?, wallet_id? (string \| null) }` | `Chain` |
+| `PATCH /chains/{id}` | `{ enabled?, rpc_urls? (string[]; [] resets to env/default), confirmations?, poll_interval_ms?, scan_batch?, wallet_id? (string \| null: the default wallet) }` | `Chain` |
 | `POST /chains/{id}/test-rpc` | `{ rpc_url?: string }` (omit to test the configured endpoints) | `{ ok: boolean; head: number; latency_ms: number; error: string }` |
 | `GET /assets` | | `{ items: Asset[] }` |
 | `POST /assets` | `{ chain_id, symbol, name, contract_address, decimals, quote_precision, rate_key, is_stablecoin }` | `201 Asset` (custom token; id = `lower(symbol)-chain_id`) |
 | `PATCH /assets/{id}` | `{ enabled?, quote_precision?, sort_order?, rate_key?, name? }` | `Asset` |
 | `GET /wallets` | | `{ items: Wallet[] }` |
 | `POST /wallets/preview` | `{ family, kind, xpub?, address?, chain_id }` | `{ addresses: string[] }` (first 3 derived addresses, or the normalised static address) |
-| `POST /wallets` | `{ name, family, kind, xpub?, address? }` | `201 Wallet` |
+| `POST /wallets` | `{ name, family, kind, xpub?, address? }` | `201 Wallet` (409 `conflict` with `fields.xpub` / `fields.address` when the key material is already registered) |
 | `PATCH /wallets/{id}` | `{ name }` | `Wallet` |
-| `DELETE /wallets/{id}` | | `204` (409 if referenced by quotes) |
+| `DELETE /wallets/{id}` | | `204` (409 if referenced by quotes or used as a merchant's own wallet) |
 | `GET /webhook-events` | `status?`, `merchant_id?`, `invoice_id?`, paging | `Page<WebhookEvent>` |
 | `POST /webhook-events/{id}/retry` | | `WebhookEvent` (re-queued for immediate delivery) |
 | `GET /settings` | | `Settings` |
@@ -269,3 +280,24 @@ interface Overview {
 | `PATCH /users/{id}` | `{ role?, active?, password? }` | `AdminUser` (cannot demote/deactivate the last owner) |
 | `DELETE /users/{id}` | | `204` (not yourself, not the last owner) |
 | `GET /audit-logs` | `action?`, `actor?`, paging | `Page<AuditLog>` |
+
+### Receiving wallets
+
+The wallet an invoice of merchant *M* is paid to on chain *C* is *M*'s own
+wallet on *C* (`PUT /merchants/{id}/wallets/{chain_id}`) if there is one,
+otherwise *C*'s default wallet (`PATCH /chains/{id}` `wallet_id`), otherwise
+none — then *C*'s assets are not payable for *M* (they are missing from
+`GET /api/v1/assets` and the checkout `assets`, and selecting one answers 422).
+See `architecture.md`, "Receiving wallets".
+
+* Existing quotes keep the wallet and address they were created with:
+  setting, changing or removing a merchant wallet (or a chain's default
+  wallet) only affects quotes created afterwards. A customer who already
+  sees an address on the checkout of an unpaid invoice can still pay it — as
+  long as the chain is still scanned, i.e. keeps a default wallet or at least
+  one merchant wallet (`architecture.md`, "Scanner").
+* `merchant.wallet.set` / `merchant.wallet.unset` are written to the audit
+  log (`target_type` `merchant`, `detail.chain_id`, `detail.wallet_id`);
+  removing a binding that does not exist changes nothing and is not logged.
+* A wallet used by any merchant cannot be deleted (409) until those
+  merchants are switched back to the default wallet or to another wallet.

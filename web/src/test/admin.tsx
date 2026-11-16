@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, type RenderOptions } from "@testing-library/react";
 import { AuthProvider } from "@/components/admin/auth";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import type { AdminRole, AdminUser, Chain, Merchant, Settings } from "@/lib/api/types";
+import type { AdminRole, AdminUser, Chain, Merchant, Settings, Wallet } from "@/lib/api/types";
 import type { Locale } from "@/lib/i18n/config";
 import { I18nProvider } from "@/lib/i18n/provider";
 
@@ -76,6 +76,23 @@ export function chainFixture(overrides: Partial<Chain> = {}): Chain {
     last_scan_at: "2026-11-16T07:59:00Z",
     last_error: "",
     payable: true,
+    merchant_wallets: 0,
+    ...overrides,
+  };
+}
+
+export function walletFixture(overrides: Partial<Wallet> = {}): Wallet {
+  return {
+    id: "w-1",
+    name: "Ledger · EVM main account",
+    family: "evm",
+    kind: "xpub",
+    xpub: "xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKrhko4egpiMZbpiaQL2jkwSB1icqYh2cfDfVxdx4df189oLKnC5fSwqPfgyP3hooxujYzAu3fDVmz",
+    address: "",
+    next_index: 3,
+    chain_ids: ["ethereum"],
+    merchant_bindings: [],
+    created_at: "2026-09-01T00:00:00Z",
     ...overrides,
   };
 }

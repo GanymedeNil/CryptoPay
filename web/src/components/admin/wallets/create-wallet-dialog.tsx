@@ -19,8 +19,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { describeError } from "@/lib/admin/errors";
-import { adminKeys, useAdminMutation, useChains } from "@/lib/admin/queries";
-import { kindsFor, looksLikeAddress, looksLikeSecret, looksLikeXpub, xpubPrefixes } from "@/lib/admin/wallet-input";
+import { adminKeys, useAdminMutation, useChains, useWallets } from "@/lib/admin/queries";
+import { findDuplicateWallet, kindsFor, looksLikeAddress, looksLikeSecret, looksLikeXpub, xpubPrefixes } from "@/lib/admin/wallet-input";
 import { adminApi } from "@/lib/api/admin";
 import { isApiError } from "@/lib/api/client";
 import type { Chain, Family, WalletKind, WalletPreviewRequest } from "@/lib/api/types";
@@ -49,6 +49,7 @@ function Wizard({ onDone }: { onDone: () => void }) {
   const t = useT();
   const base = useId();
   const chains = useChains({ refetchInterval: false });
+  const wallets = useWallets();
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [family, setFamily] = useState<Family>("evm");
   const [kind, setKind] = useState<WalletKind>("xpub");
@@ -59,15 +60,22 @@ function Wizard({ onDone }: { onDone: () => void }) {
   const [name, setName] = useState("");
   const [nameError, setNameError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  // 409 from the server: the key material is already registered.
+  const [serverKeyError, setServerKeyError] = useState<string | null>(null);
 
   const familyChains = (chains.data ?? []).filter((c) => c.family === family);
   const previewChain = chainId || defaultPreviewChain(chains.data ?? [], family);
   const trimmed = key.trim();
   const secret = looksLikeSecret(trimmed);
   const shapeOk = kind === "xpub" ? looksLikeXpub(family, trimmed) : looksLikeAddress(family, trimmed, previewChain);
+  const duplicate = secret ? undefined : findDuplicateWallet(wallets.data, family, kind, trimmed);
   const keyError = secret
     ? t("admin.wallets.wizard.secretDetected")
-    : touched && !trimmed
+    : duplicate
+      ? t("admin.wallets.wizard.duplicate", { name: duplicate.name })
+      : serverKeyError
+        ? serverKeyError
+        : touched && !trimmed
       ? kind === "xpub"
         ? t("admin.wallets.wizard.xpubRequired")
         : t("admin.wallets.wizard.addressRequired")
@@ -92,7 +100,11 @@ function Wizard({ onDone }: { onDone: () => void }) {
     toastError: false,
     onSuccess: () => onDone(),
     onError: (e) => {
-      if (isApiError(e) && e.fields?.name) setNameError(e.fields.name);
+      if (isApiError(e) && e.isConflict && (e.fields?.xpub || e.fields?.address)) {
+        // Already registered: back to the key, with the error on that field.
+        setServerKeyError(t("admin.wallets.wizard.duplicateServer"));
+        setStep(2);
+      } else if (isApiError(e) && e.fields?.name) setNameError(e.fields.name);
       else setFormError(describeError(t, e));
     },
   });
@@ -104,6 +116,7 @@ function Wizard({ onDone }: { onDone: () => void }) {
   }
   function resetKey() {
     setKey("");
+    setServerKeyError(null);
     setTouched(false);
     setChainId("");
     preview.reset();
@@ -111,7 +124,7 @@ function Wizard({ onDone }: { onDone: () => void }) {
   }
   function runPreview() {
     setTouched(true);
-    if (!trimmed || secret || (kind === "xpub" && !shapeOk) || !previewChain) return;
+    if (!trimmed || secret || duplicate || (kind === "xpub" && !shapeOk) || !previewChain) return;
     preview.mutate({ family, kind, chain_id: previewChain, ...(kind === "xpub" ? { xpub: trimmed } : { address: trimmed }) });
   }
 
@@ -212,6 +225,7 @@ function Wizard({ onDone }: { onDone: () => void }) {
                 value={key}
                 onChange={(e) => {
                   setKey(e.target.value);
+                  setServerKeyError(null);
                   preview.reset();
                 }}
                 onBlur={() => setTouched(true)}
@@ -229,6 +243,7 @@ function Wizard({ onDone }: { onDone: () => void }) {
                 value={key}
                 onChange={(e) => {
                   setKey(e.target.value);
+                  setServerKeyError(null);
                   preview.reset();
                 }}
                 onBlur={() => setTouched(true)}
@@ -256,7 +271,7 @@ function Wizard({ onDone }: { onDone: () => void }) {
                 </SelectContent>
               </Select>
             </FormField>
-            <Button type="button" variant="outline" onClick={runPreview} disabled={preview.isPending || secret || !previewChain}>
+            <Button type="button" variant="outline" onClick={runPreview} disabled={preview.isPending || secret || Boolean(duplicate) || !previewChain}>
               {preview.isPending && <Spinner data-icon="inline-start" />}
               {preview.isPending ? t("admin.wallets.wizard.previewing") : t("admin.wallets.wizard.preview")}
             </Button>
@@ -323,7 +338,7 @@ function Wizard({ onDone }: { onDone: () => void }) {
           <Button
             type="button"
             onClick={() => setStep((s) => (s + 1) as 2 | 3)}
-            disabled={step === 2 && (!previewOk || !verified || secret)}
+            disabled={step === 2 && (!previewOk || !verified || secret || Boolean(duplicate) || Boolean(serverKeyError))}
             title={step === 2 && !verified ? t("admin.wallets.wizard.verifyFirst") : undefined}
           >
             {t("admin.common.next")}

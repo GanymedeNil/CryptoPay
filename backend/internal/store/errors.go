@@ -22,8 +22,8 @@ var (
 	// row is still referenced (delete).
 	ErrForeignKey = errors.New("foreign key violation")
 	// ErrInUse: a delete was refused because other rows still reference the
-	// row (wallet used by quotes, merchant with invoices). Also matches
-	// ErrForeignKey.
+	// row (wallet used by quotes or merchant bindings, merchant with
+	// invoices). Also matches ErrForeignKey.
 	ErrInUse = errors.New("still referenced")
 	// ErrInvalid: a value was rejected by a CHECK / NOT NULL constraint, could
 	// not be represented, or failed the store's own validation.
@@ -46,6 +46,8 @@ const (
 	ConstraintAPIKeyHash            = "api_keys_key_hash_key"
 	ConstraintSessionTokenHash      = "admin_sessions_token_hash_key"
 	ConstraintTransferUnique        = "transfers_chain_id_tx_hash_idx_key"
+	ConstraintWalletXpub            = "wallets_xpub_key"           // xpub already registered (any family)
+	ConstraintWalletStaticAddress   = "wallets_static_address_key" // (family, address) of static wallets
 )
 
 // PostgreSQL SQLSTATE codes used by the store.

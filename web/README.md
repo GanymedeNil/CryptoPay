@@ -209,10 +209,10 @@ title (`src/lib/admin/metadata.ts`).
 | `/admin/invoices/[id]` | summary, timeline (rebuilt from quotes / transfers / webhook events), quotes, transfers, webhook events (payload + retry), cancel, mark paid (note required); refreshes every 10 s while open |
 | `/admin/transfers` | `chain_id`, `status`, `matched`, `q`; unmatched → assign dialog (paste id or checkout link, invoice preview, asset compatibility check) |
 | `/admin/webhooks` | `status`, `merchant_id`, `invoice_id`; expandable rows (payload, last error / response), retry |
-| `/admin/merchants`, `/admin/merchants/[id]` | search, create (webhook secret shown once), profile (name / status / webhook URL), API keys (create → key once, revoke), rotate secret, integration snippet (curl + Node.js / Python signature check) |
-| `/admin/chains` | grouped mainnet / testnet: enable (optimistic), payable + reasons, scanner state, RPC editor (masked list, replace / reset, per-URL test), default-RPC warning on mainnets, scan parameters, receiving wallet (same family only) |
+| `/admin/merchants`, `/admin/merchants/[id]` | search, create (webhook secret shown once), profile (name / status / webhook URL), API keys (create → key once, revoke), rotate secret, receiving wallets (every enabled chain, mainnets first / testnets grouped, with its effective wallet — merchant / default / not configured — and a select: "use the default wallet" or a wallet of the chain's family → `PUT` / `DELETE /merchants/{id}/wallets/{chain_id}`; read-only for viewers), integration snippet (curl + Node.js / Python signature check) |
+| `/admin/chains` | grouped mainnet / testnet: enable (optimistic), payable + reasons (payable = the default wallet; merchant-wallet count and "merchants with their own wallet can still be paid"), scanner state, RPC editor (masked list, replace / reset, per-URL test), default-RPC warning on mainnets, scan parameters, default receiving wallet (same family only) |
 | `/admin/assets` | grouped by chain: enable (optimistic), edit precision / order / rate key / name, add custom token |
-| `/admin/wallets` | list, 3-step wizard (type → key + `POST /wallets/preview` + "I checked" → name) with the "never paste a private key" notice and local secret detection, rename, delete (409 explained) |
+| `/admin/wallets` | list with usage (default wallet of chains · merchant wallet of merchants, linked), 3-step wizard (type → key + `POST /wallets/preview` + "I checked" → name) with the "never paste a private key" notice, local secret and duplicate-key detection (a 409 `fields.xpub` / `fields.address` sends the wizard back to the key), rename, delete (409 explained: quotes, or the merchants using it) |
 | `/admin/settings` | every `Settings` field in operator units (minutes / hours, %), validation, sticky save bar |
 | `/admin/users` | owner only (hidden from the nav otherwise): create (random password generator), role, (de)activate, reset password, delete, "last owner" errors |
 | `/admin/audit-logs` | `action`, `actor` filters, expandable detail JSON, links to the target |
@@ -347,7 +347,10 @@ disabled), ~150 invoices over 90 days in every status (the checkout
 scenarios above included, so console-created invoices open at `/pay/{id}`),
 unmatched / orphaned transfers, delivered / failed webhook events, 13 chains
 with varied scanner state (lagging, erroring, disabled, default RPC, no
-wallet), 5 wallets, custom token without a rate, audit history. Assets
-disabled in the console disappear from the mock checkout. RPC tests fail for
+default wallet), 8 wallets, merchant wallets (Pixel Forge on Ethereum /
+Polygon / Base, Nimbus VPN on Tron, Acme on Litecoin — which has no default
+wallet), custom token without a rate, audit history. Assets disabled in the
+console, or without a receiving wallet for the invoice's merchant (its own,
+else the chain's default), disappear from the mock checkout. RPC tests fail for
 hosts containing `bad` / `invalid` / `down`; webhook deliveries fail for URLs
 containing `broken` / `down`. `mock/admin.test.mjs` smoke-tests it.

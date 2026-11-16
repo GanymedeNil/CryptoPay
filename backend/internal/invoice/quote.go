@@ -134,11 +134,13 @@ type quotePlan struct {
 	rate     *decimal.Decimal // nil: look it up only if a new quote is needed
 }
 
-// plan loads the asset (which must be payable), its chain and wallet and the
-// settings. With currency != "" the rate is looked up as well.
-func (s *Service) plan(ctx context.Context, assetID, currency string) (quotePlan, error) {
+// plan loads the asset (which must be payable for the merchant), its chain,
+// the merchant's receiving wallet on that chain (its own, else the chain's
+// default: store.ResolveWallet) and the settings. With currency != "" the
+// rate is looked up as well.
+func (s *Service) plan(ctx context.Context, merchantID uuid.UUID, assetID, currency string) (quotePlan, error) {
 	var p quotePlan
-	a, err := s.store.GetPayableAsset(ctx, assetID)
+	a, err := s.store.GetPayableAsset(ctx, merchantID, assetID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return p, fmt.Errorf("%w: %q", ErrAssetUnavailable, assetID)
@@ -149,10 +151,10 @@ func (s *Service) plan(ctx context.Context, assetID, currency string) (quotePlan
 	if err != nil {
 		return p, err
 	}
-	if !c.Enabled || c.WalletID == nil {
+	if !c.Enabled {
 		return p, fmt.Errorf("%w: %q", ErrAssetUnavailable, assetID)
 	}
-	w, err := s.store.GetWallet(ctx, *c.WalletID)
+	w, err := s.store.ResolveWallet(ctx, merchantID, c.ID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return p, fmt.Errorf("%w: %q", ErrAssetUnavailable, assetID)
@@ -163,7 +165,7 @@ func (s *Service) plan(ctx context.Context, assetID, currency string) (quotePlan
 	if err != nil {
 		return p, err
 	}
-	p = quotePlan{asset: a, chain: c, wallet: w, settings: st}
+	p = quotePlan{asset: a, chain: c, wallet: w.Wallet, settings: st}
 	if currency != "" {
 		r, err := s.rateFor(ctx, currency, a, st, nil)
 		if err != nil {
@@ -179,13 +181,16 @@ func (s *Service) plan(ctx context.Context, assetID, currency string) (quotePlan
 //
 //   - The invoice must be open (pending / partial / confirming) and not past
 //     expires_at, else ErrNotOpen. Unknown invoice → ErrNotFound.
-//   - The asset must be payable right now, else ErrAssetUnavailable.
+//   - The asset must be payable right now for the invoice's merchant (its
+//     own wallet on the chain, else the chain's default wallet), else
+//     ErrAssetUnavailable.
 //   - Selecting the asset of the currently active quote returns that quote
 //     unchanged (so a double submit is harmless).
 //   - Once funds were detected on any quote of the invoice, switching is
 //     refused with ErrFundsDetected.
 //   - A live (superseded) quote of the invoice for that asset is re-activated
-//     with its original amount and address.
+//     with its original amount and address (also when the merchant's wallet
+//     changed since: existing quotes keep their wallet and address).
 //   - Otherwise the other live quotes become superseded (still watched until
 //     their watch_until) and a new quote is created at the current rate
 //     (ErrRateUnavailable when there is none).
@@ -210,7 +215,7 @@ func (s *Service) SelectAsset(ctx context.Context, invoiceID uuid.UUID, assetID 
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return domain.Quote{}, err
 	}
-	p, err := s.plan(ctx, assetID, currency)
+	p, err := s.plan(ctx, inv.MerchantID, assetID, currency)
 	if err != nil {
 		return domain.Quote{}, err
 	}
@@ -379,13 +384,13 @@ type Estimate struct {
 	Amount *big.Int // base units; nil when no rate is available
 }
 
-// Estimates returns, for every asset payable right now (in catalog sort
-// order), the amount the invoice would cost at the current rate — the
-// checkout asset list. Nothing is created or reserved; the real amount is
+// Estimates returns, for every asset payable right now for the invoice's
+// merchant (in catalog sort order), the amount the invoice would cost at the
+// current rate — the checkout asset list. Nothing is created or reserved; the real amount is
 // fixed by SelectAsset (and may differ by the unique-amount bump on static
 // wallets). Assets without a rate have a nil Amount.
 func (s *Service) Estimates(ctx context.Context, inv domain.Invoice) ([]Estimate, error) {
-	payable, err := s.store.ListPayableAssets(ctx)
+	payable, err := s.store.ListPayableAssets(ctx, inv.MerchantID)
 	if err != nil {
 		return nil, err
 	}

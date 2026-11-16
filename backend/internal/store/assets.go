@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"cryptopay/internal/domain"
@@ -35,7 +36,7 @@ func AssetID(symbol, chainID string) string {
 // AssetFilter selects assets for ListAssets.
 type AssetFilter struct {
 	ChainID     string // "" = all chains
-	EnabledOnly bool   // only assets with enabled = true (chain state is ignored; see ListPayableAssets)
+	EnabledOnly bool   // only assets with enabled = true (chain and wallets are ignored; see ListPayableAssets)
 }
 
 // ListAssets returns assets ordered by sort_order, id.
@@ -57,21 +58,25 @@ func (s *Store) GetAsset(ctx context.Context, id string) (domain.Asset, error) {
 	return a, wrap("get asset", err)
 }
 
-// payableJoin restricts assets to those payable right now: asset enabled,
-// chain enabled and a wallet assigned to the chain.
-const payableJoin = ` FROM assets a JOIN chains ch ON ch.id = a.chain_id
-	WHERE a.enabled AND ch.enabled AND ch.wallet_id IS NOT NULL`
+// payableJoin restricts assets to those the merchant given as $1 can be
+// paid in right now: asset enabled, chain enabled and a receiving wallet
+// resolved for the merchant on the chain (resolveWalletJoin).
+const payableJoin = ` FROM assets a JOIN chains ch ON ch.id = a.chain_id` + resolveWalletJoin + `
+	WHERE a.enabled AND ch.enabled AND w.id IS NOT NULL`
 
-// ListPayableAssets returns the assets customers can pay with right now
-// (asset enabled ∧ chain enabled ∧ chain has a wallet), by sort_order, id.
-func (s *Store) ListPayableAssets(ctx context.Context) ([]domain.Asset, error) {
-	rows, err := s.db.Query(ctx, `SELECT `+assetCols+payableJoin+` ORDER BY a.sort_order, a.id`)
+// ListPayableAssets returns the assets the merchant's customers can pay
+// with right now (asset enabled ∧ chain enabled ∧ the merchant has a
+// receiving wallet on the chain — its own or the chain's default, see
+// ResolveWallet), by sort_order, id.
+func (s *Store) ListPayableAssets(ctx context.Context, merchantID uuid.UUID) ([]domain.Asset, error) {
+	rows, err := s.db.Query(ctx, `SELECT `+assetCols+payableJoin+` ORDER BY a.sort_order, a.id`, merchantID)
 	return collectAssets(rows, err, "list payable assets")
 }
 
-// GetPayableAsset returns the asset if it is payable right now, else ErrNotFound.
-func (s *Store) GetPayableAsset(ctx context.Context, id string) (domain.Asset, error) {
-	a, err := scanAsset(s.db.QueryRow(ctx, `SELECT `+assetCols+payableJoin+` AND a.id = $1`, id))
+// GetPayableAsset returns the asset if the merchant can be paid in it right
+// now (ListPayableAssets), else ErrNotFound.
+func (s *Store) GetPayableAsset(ctx context.Context, merchantID uuid.UUID, id string) (domain.Asset, error) {
+	a, err := scanAsset(s.db.QueryRow(ctx, `SELECT `+assetCols+payableJoin+` AND a.id = $2`, merchantID, id))
 	return a, wrap("get payable asset", err)
 }
 
@@ -145,7 +150,8 @@ func (s *Store) UpdateAsset(ctx context.Context, id string, upd AssetUpdate) (do
 
 // Catalog is an in-memory snapshot of all chains and assets, convenient for
 // enriching quotes / transfers / assets in API responses without per-row
-// queries. Build it with LoadCatalog.
+// queries. Build it with LoadCatalog. It does not know merchant wallets, so
+// it cannot tell what is payable: use ListPayableAssets for that.
 type Catalog struct {
 	Chains []domain.Chain // as ListChains (RPCURLs = admin-configured only)
 	Assets []domain.Asset // as ListAssets, by sort_order
@@ -206,22 +212,4 @@ func (c *Catalog) AssetByContract(chainID, contract string) (domain.Asset, bool)
 		}
 	}
 	return domain.Asset{}, false
-}
-
-// Payable reports whether an asset is payable right now (asset enabled,
-// chain enabled, wallet assigned) — the same rule as ListPayableAssets.
-func (c *Catalog) Payable(a domain.Asset) bool {
-	ch, ok := c.Chain(a.ChainID)
-	return ok && a.Enabled && ch.Enabled && ch.WalletID != nil
-}
-
-// PayableAssets returns the payable assets in sort order.
-func (c *Catalog) PayableAssets() []domain.Asset {
-	out := []domain.Asset{}
-	for _, a := range c.Assets {
-		if c.Payable(a) {
-			out = append(out, a)
-		}
-	}
-	return out
 }

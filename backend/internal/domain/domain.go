@@ -45,7 +45,11 @@ type Chain struct {
 	ExplorerTxURL string     // template containing "{tx}"
 	ExplorerAddr  string     // template containing "{address}"
 	Params        ChainParam // family specific parameters
-	WalletID      *uuid.UUID // receiving wallet assigned to this chain
+	WalletID      *uuid.UUID // default receiving wallet of this chain (merchants without their own wallet)
+	// MerchantWallets is the number of merchant-specific wallets bound to
+	// this chain (read-only, computed by the store). A chain without a
+	// default wallet still receives payments for those merchants.
+	MerchantWallets int
 
 	// Scanner state.
 	ScanCursor uint64 // last fully scanned block (0 = never scanned)
@@ -97,7 +101,8 @@ const (
 	WalletStatic WalletKind = "static"
 )
 
-// Wallet is a receiving configuration that can be assigned to chains of its family.
+// Wallet is a receiving configuration that can be assigned to chains of its
+// family, as a chain's default wallet or as one merchant's wallet on a chain.
 type Wallet struct {
 	ID        uuid.UUID
 	Name      string

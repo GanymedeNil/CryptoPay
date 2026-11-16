@@ -86,19 +86,60 @@ Adapters fail over to the next URL on transport errors / 5xx / 429.
 
 ## Receiving wallets
 
-A wallet belongs to one family and is assigned to chains (`chains.wallet_id`).
+A wallet belongs to one family. It is used in two ways:
+
+* as a chain's **default wallet** (`chains.wallet_id`): every merchant without
+  a wallet of its own on that chain is paid to it;
+* as a **merchant wallet** (`merchant_wallets`, primary key
+  `(merchant_id, chain_id)`): that merchant's invoices on that chain are paid
+  to it instead — use this when merchants are separate businesses whose funds
+  must not land in one wallet.
+
+**Resolution rule.** The wallet for (merchant, chain) is the merchant's
+binding if present, otherwise the chain's default wallet, otherwise none.
+`store.ResolveWallet` implements it, and the payable-asset queries share its
+SQL, so the rule exists once. An asset is *payable for a merchant* iff the
+asset is enabled ∧ its chain is enabled ∧ a wallet resolves for (merchant,
+chain); this drives `GET /api/v1/assets`, the checkout asset list, estimates
+and quote creation. A binding must use a wallet of the chain's family, and a
+static wallet's address must be valid on that chain (the same checks as for
+the default wallet). Several merchants may share one wallet. A wallet used by
+any binding cannot be deleted; deleting a merchant deletes its bindings.
+
+**Existing quotes keep their wallet.** A quote stores the wallet id and the
+address it was created with. Changing or removing a binding (or the default
+wallet) only affects quotes created afterwards: an unpaid invoice whose
+customer already sees an address can still be paid to it (as long as the
+chain is still scanned, see below), and switching back to that asset
+re-activates the quote with its original address.
+
+**Key material is unique.** Two wallet rows with the same xpub would each
+allocate indices from 0 and so derive *identical* addresses for invoices of
+different merchants — the scanner could not tell their payments apart and
+funds of one merchant would land in another merchant's wallet configuration.
+Hence `UNIQUE (xpub) WHERE kind = 'xpub'` (across families: an EVM and a Tron
+wallet with one xpub share the same keys) and `UNIQUE (family, address) WHERE
+kind = 'static'`; `POST /wallets` answers 409 on the offending field. To give
+two merchants independent xpub wallets, use different accounts
+(`m/44'/60'/0'`, `m/44'/60'/1'`, … or different seeds). Migration 00003
+merges pre-existing same-family duplicates into the oldest row (references
+re-pointed, highest `next_index` kept, logged as `wallet.merge`) and refuses
+to run when one xpub is registered for two families.
+
+Each wallet is of one of two kinds:
 
 * **xpub** (EVM, Tron, UTXO): account-level extended public key. Each invoice
   gets a fresh address `xpub/0/index` (`wallets.next_index` is allocated
   atomically). Quotes of one invoice on the same wallet reuse the same index,
-  so one invoice has one address across all EVM chains.
+  so one invoice has one address across all EVM chains using that wallet.
   * EVM: BIP-44 `m/44'/60'/0'` xpub → keccak address.
   * Tron: BIP-44 `m/44'/195'/0'` xpub → base58 address.
   * UTXO: BIP-84 `m/84'/coin'/0'` `xpub`/`zpub` (`tpub`/`vpub` testnet) → P2WPKH bech32.
 * **static** (all families; the only option for Solana): one fixed address.
   Invoices are told apart by a **unique amount**: the quote amount is bumped
   in its last digits until `(chain, asset, address, amount_due)` is unique
-  among live quotes. A transfer matches a quote only on the exact amount;
+  among live quotes (per address: merchants with different static addresses
+  each get the plain amount). A transfer matches a quote only on the exact amount;
   anything else is stored as *unmatched* for manual assignment in the admin.
 
 Sweeping funds from derived addresses is done by the merchant's own wallet
@@ -126,7 +167,14 @@ software holding the seed; it is deliberately out of scope for the server.
 
 ## Scanner
 
-One loop per enabled chain with a wallet:
+One loop per enabled chain with a default wallet **or at least one merchant
+wallet** (`chains.wallet_id IS NOT NULL OR` a `merchant_wallets` row). A
+chain left without either stops being scanned, also while quotes created
+earlier are still watched — keep a wallet on the chain until they are closed.
+Matching does not care whose wallet an address belongs to: it is by
+(chain, address, asset[, exact amount]) of the live quotes, so merchants with
+different wallets on one chain are credited independently, and two merchants
+sharing one static address are still told apart by unique amounts.
 
 1. `head ← client.Head()`; scan `[cursor+1, min(cursor+batch, head)]` for the
    addresses of live quotes on that chain (skip the RPC call and just advance

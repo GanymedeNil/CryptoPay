@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -27,15 +28,28 @@ func scanWallet(row pgx.Row) (domain.Wallet, error) {
 	return w, err
 }
 
-// WalletView is a wallet with the ids of the chains it is assigned to.
+// WalletView is a wallet with the ids of the chains it is the default
+// wallet of and the merchants that use it as their own wallet.
 type WalletView struct {
 	domain.Wallet
-	ChainIDs []string // sorted; never nil
+	ChainIDs         []string        // chains with this default wallet, sorted; never nil
+	MerchantBindings []WalletBinding // by merchant name, chain; never nil
+}
+
+// WalletBinding is one merchant using a wallet as its receiving wallet on a
+// chain (see SetMerchantWallet).
+type WalletBinding struct {
+	MerchantID   uuid.UUID `json:"merchant_id"`
+	MerchantName string    `json:"merchant_name"`
+	ChainID      string    `json:"chain_id"`
 }
 
 // CreateWallet inserts a receiving wallet. Xpub must be set for xpub
 // wallets and Address (canonical form) for static wallets; validating the
 // key / address itself is the caller's job (hdwallet / address packages).
+// Key material is unique: an xpub that is already registered yields
+// ErrConflict (ConstraintWalletXpub), as does a static address already
+// registered for the family (ConstraintWalletStaticAddress).
 func (s *Store) CreateWallet(ctx context.Context, w domain.Wallet) (domain.Wallet, error) {
 	const op = "create wallet"
 	if strings.TrimSpace(w.Name) == "" {
@@ -75,27 +89,38 @@ func (s *Store) GetWallet(ctx context.Context, id uuid.UUID) (domain.Wallet, err
 }
 
 const walletViewSQL = `SELECT ` + walletCols + `,
-	COALESCE(ARRAY(SELECT c.id FROM chains c WHERE c.wallet_id = w.id ORDER BY c.id), '{}')
+	COALESCE(ARRAY(SELECT c.id FROM chains c WHERE c.wallet_id = w.id ORDER BY c.id), '{}'),
+	COALESCE((SELECT json_agg(json_build_object('merchant_id', mw.merchant_id, 'merchant_name', m.name, 'chain_id', mw.chain_id)
+		ORDER BY m.name, m.id, mw.chain_id)
+		FROM merchant_wallets mw JOIN merchants m ON m.id = mw.merchant_id WHERE mw.wallet_id = w.id), '[]')::text
 	FROM wallets w`
 
 func scanWalletView(row pgx.Row) (WalletView, error) {
 	var v WalletView
-	var family, kind string
+	var family, kind, bindings string
 	var next int64
-	err := row.Scan(&v.ID, &v.Name, &family, &kind, &v.Xpub, &v.Address, &next, &v.CreatedAt, &v.UpdatedAt, &v.ChainIDs)
+	err := row.Scan(&v.ID, &v.Name, &family, &kind, &v.Xpub, &v.Address, &next, &v.CreatedAt, &v.UpdatedAt, &v.ChainIDs, &bindings)
+	if err != nil {
+		return WalletView{}, err
+	}
 	v.Family, v.Kind = domain.Family(family), domain.WalletKind(kind)
 	v.NextIndex = uint32(min(max(next, 0), MaxAddressIndex+1))
 	v.ChainIDs = nonNil(v.ChainIDs)
-	return v, err
+	if err := json.Unmarshal([]byte(bindings), &v.MerchantBindings); err != nil {
+		return WalletView{}, fmt.Errorf("decode merchant bindings of wallet %s: %w", v.ID, err)
+	}
+	v.MerchantBindings = nonNil(v.MerchantBindings)
+	return v, nil
 }
 
-// GetWalletView returns a wallet with its assigned chain ids.
+// GetWalletView returns a wallet with its assigned chain ids and merchant bindings.
 func (s *Store) GetWalletView(ctx context.Context, id uuid.UUID) (WalletView, error) {
 	v, err := scanWalletView(s.db.QueryRow(ctx, walletViewSQL+` WHERE w.id = $1`, id))
 	return v, wrap("get wallet", err)
 }
 
-// ListWallets returns all wallets with their assigned chain ids, oldest first.
+// ListWallets returns all wallets with their assigned chain ids and merchant
+// bindings, oldest first.
 func (s *Store) ListWallets(ctx context.Context) ([]WalletView, error) {
 	rows, err := s.db.Query(ctx, walletViewSQL+` ORDER BY w.created_at, w.id`)
 	if err != nil {
@@ -118,15 +143,18 @@ func (s *Store) RenameWallet(ctx context.Context, id uuid.UUID, name string) (do
 	return w, wrap(op, err)
 }
 
-// WalletInUse reports whether any quote references the wallet.
+// WalletInUse reports whether any quote or merchant binding references the
+// wallet (a chain's default wallet assignment does not count).
 func (s *Store) WalletInUse(ctx context.Context, id uuid.UUID) (bool, error) {
 	var used bool
-	err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM quotes WHERE wallet_id = $1)`, id).Scan(&used)
+	err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM quotes WHERE wallet_id = $1)
+		OR EXISTS (SELECT 1 FROM merchant_wallets WHERE wallet_id = $1)`, id).Scan(&used)
 	return used, wrap("wallet in use", err)
 }
 
-// DeleteWallet deletes a wallet; chains it was assigned to are unassigned.
-// It fails with ErrInUse while quotes reference the wallet.
+// DeleteWallet deletes a wallet; chains it was the default wallet of are
+// unassigned. It fails with ErrInUse while quotes or merchant bindings
+// reference the wallet.
 func (s *Store) DeleteWallet(ctx context.Context, id uuid.UUID) error {
 	const op = "delete wallet"
 	used, err := s.WalletInUse(ctx, id)
@@ -138,7 +166,7 @@ func (s *Store) DeleteWallet(ctx context.Context, id uuid.UUID) error {
 	}
 	tag, err := s.db.Exec(ctx, `DELETE FROM wallets WHERE id = $1`, id)
 	if err != nil {
-		return wrapDelete(op, err) // a quote created concurrently still trips the FK
+		return wrapDelete(op, err) // a quote / binding created concurrently still trips the FK
 	}
 	if tag.RowsAffected() == 0 {
 		return wrap(op, ErrNotFound)

@@ -507,13 +507,13 @@ func jsonKindOf(v any) string {
 func TestContractDocParses(t *testing.T) {
 	doc := loadContract(t)
 	for _, name := range []string{"Invoice", "Quote", "Transfer", "AssetInfo", "CreateInvoice", "CheckoutView",
-		"CheckoutAsset", "AdminUser", "Merchant", "ApiKey", "Wallet", "Chain", "Asset", "InvoiceDetail",
+		"CheckoutAsset", "AdminUser", "Merchant", "ApiKey", "Wallet", "MerchantWallet", "Chain", "Asset", "InvoiceDetail",
 		"AdminInvoice", "WebhookEvent", "AuditLog", "Settings", "Overview"} {
 		_, ok := doc.fieldsOf(name)
 		require.True(t, ok, "interface %s", name)
 	}
 	require.Contains(t, doc.aliases, "InvoiceStatus")
-	require.Len(t, doc.routes, 5+2+39, "every endpoint row is parsed")
+	require.Len(t, doc.routes, 5+2+41, "every endpoint row is parsed")
 	r := doc.routes["POST /api/admin/merchants"]
 	require.Equal(t, 201, r.Status)
 	require.Equal(t, "object", r.Type.kind)

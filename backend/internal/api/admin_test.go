@@ -317,10 +317,24 @@ func TestAdminWallets(t *testing.T) {
 		assert.NotContains(t, e.Fields[tc.field], bip32Xprv[10:30], "key material never echoed")
 	}
 
-	w := a.post("/wallets", map[string]any{"name": "Treasury EVM", "family": "evm", "kind": "xpub", "xpub": evmXpub}).
+	// Key material that is already registered (the environment's EVM xpub
+	// and Solana address) is refused on the right field: two wallets with
+	// one key would hand out the same addresses.
+	e := a.post("/wallets", map[string]any{"name": "Dup", "family": "evm", "kind": "xpub", "xpub": evmXpub}).apiError(http.StatusConflict, CodeConflict)
+	assert.Contains(t, e.Fields["xpub"], "already registered")
+	assert.Contains(t, e.Fields["xpub"], h.EVMWallet.Name)
+	e = a.post("/wallets", map[string]any{"name": "Dup", "family": "tron", "kind": "xpub", "xpub": evmXpub}).apiError(http.StatusConflict, CodeConflict)
+	assert.Contains(t, e.Fields, "xpub", "the same key under another family is refused too")
+	e = a.post("/wallets", map[string]any{"name": "Dup", "family": "solana", "kind": "static", "address": storetest.StaticAddresses[domain.FamilySolana]}).
+		apiError(http.StatusConflict, CodeConflict)
+	assert.Contains(t, e.Fields["address"], h.SolanaWallet.Name)
+
+	treasuryXpub := hdwallettest.AccountXpub(invoicetest.Mnemonic, "m/44'/60'/1'")
+	w := a.post("/wallets", map[string]any{"name": "Treasury EVM", "family": "evm", "kind": "xpub", "xpub": treasuryXpub}).
 		status(http.StatusCreated).object()
 	assert.Equal(t, []any{}, w["chain_ids"])
-	assert.Equal(t, evmXpub, w["xpub"])
+	assert.Equal(t, []any{}, w["merchant_bindings"])
+	assert.Equal(t, treasuryXpub, w["xpub"])
 	assert.Equal(t, "", w["address"])
 	assert.EqualValues(t, 0, w["next_index"])
 
@@ -331,7 +345,7 @@ func TestAdminWallets(t *testing.T) {
 	require.NoError(t, err)
 	a.post("/wallets", map[string]any{"name": "LTC", "family": "utxo", "kind": "static", "address": ltc}).
 		status(http.StatusCreated)
-	a.post("/wallets", map[string]any{"name": "SOL", "family": "solana", "kind": "static", "address": storetest.StaticAddresses[domain.FamilySolana]}).
+	a.post("/wallets", map[string]any{"name": "SOL", "family": "solana", "kind": "static", "address": storetest.StaticAddress(domain.FamilySolana, 1)}).
 		status(http.StatusCreated)
 
 	for _, body := range []map[string]any{
@@ -344,13 +358,13 @@ func TestAdminWallets(t *testing.T) {
 		a.post("/wallets", body).apiError(http.StatusBadRequest, CodeInvalidRequest)
 	}
 	assert.NotContains(t, h.allAuditText(), bip32Xprv)
-	assert.NotContains(t, h.allAuditText(), evmXpub, "xpubs are not copied into the audit log")
+	assert.NotContains(t, h.allAuditText(), treasuryXpub, "xpubs are not copied into the audit log")
 
 	wid := w["id"].(string)
 	renamed := a.patch("/wallets/"+wid, map[string]any{"name": "Renamed"}).status(http.StatusOK).object()
 	assert.Equal(t, "Renamed", renamed["name"])
 	a.patch("/wallets/"+wid, map[string]any{"name": " "}).apiError(http.StatusBadRequest, CodeInvalidRequest)
-	a.patch("/wallets/"+wid, map[string]any{"xpub": evmXpub}).apiError(http.StatusBadRequest, CodeInvalidRequest)
+	a.patch("/wallets/"+wid, map[string]any{"xpub": treasuryXpub}).apiError(http.StatusBadRequest, CodeInvalidRequest)
 
 	var ws itemsJSON[map[string]any]
 	a.get("/wallets").status(http.StatusOK).decode(&ws)

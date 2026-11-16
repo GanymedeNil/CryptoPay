@@ -1,11 +1,12 @@
 // Package scanner watches the configured chains for incoming payments.
 //
 // A Manager runs one loop per chain that is enabled and has a receiving
-// wallet, plus a ticker for the invoice expiry job. The set of loops follows
+// wallet — a default wallet or at least one merchant-specific wallet — plus
+// a ticker for the invoice expiry job. The set of loops follows
 // the chain configuration in the database (re-read periodically), and every
 // tick reads the chain row again, so admin changes — enabling or disabling a
-// chain, RPC endpoints, confirmations, batch size, poll interval, wallet —
-// take effect without a restart.
+// chain, RPC endpoints, confirmations, batch size, poll interval, default
+// and merchant wallets — take effect without a restart.
 //
 // # One tick (docs/architecture.md, "Scanner")
 //
@@ -133,7 +134,7 @@ func (c Config) withDefaults() Config {
 
 // Reasons a tick did not run (TickResult.Skipped).
 const (
-	SkipInactive = "inactive" // chain disabled or without a wallet
+	SkipInactive = "inactive" // chain disabled, or neither a default nor a merchant wallet
 	SkipLocked   = "locked"   // another instance is scanning the chain
 )
 
@@ -256,7 +257,11 @@ func (m *Manager) Run(ctx context.Context) error {
 	}
 }
 
-func active(c domain.Chain) bool { return c.Enabled && c.WalletID != nil }
+// active reports whether a chain is scanned: enabled, with a default wallet
+// or at least one merchant-specific wallet. Matching is by (chain, address,
+// asset[, exact amount]) of the live quotes, so whose wallet an address
+// belongs to does not matter.
+func active(c domain.Chain) bool { return c.Enabled && (c.WalletID != nil || c.MerchantWallets > 0) }
 
 // runChain ticks one chain until ctx is cancelled.
 func (m *Manager) runChain(ctx context.Context, chainID string) {
@@ -340,7 +345,8 @@ func (m *Manager) Backoff(failures int) time.Duration {
 // call, and is exported for "scan now" actions and tests.
 //
 // The tick is skipped (no error) when the chain is disabled or has no
-// wallet (SkipInactive) or another instance holds the chain's lock
+// wallet at all — neither a default nor a merchant wallet — (SkipInactive)
+// or another instance holds the chain's lock
 // (SkipLocked). An error means the tick could not complete; progress made
 // before the error is kept, the failing range is retried by the next tick,
 // and the error has been recorded in chains.last_error. Transfers whose

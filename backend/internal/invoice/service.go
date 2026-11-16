@@ -173,15 +173,16 @@ func (s *Service) Get(ctx context.Context, id uuid.UUID) (Details, error) {
 type Checkout struct {
 	store.InvoiceView                   // invoice, merchant name, current quote
 	Transfers         []domain.Transfer // transfers credited to the invoice, newest first
-	Estimates         []Estimate        // every asset payable right now, in display order
+	Estimates         []Estimate        // every asset payable right now for the merchant, in display order
 	Catalog           *store.Catalog
 	Settings          domain.Settings
 	Now               time.Time // server time (the service clock)
 }
 
 // Checkout loads the checkout data of an invoice. ErrNotFound if it does
-// not exist. Estimates are computed for every payable asset whatever the
-// invoice status (null without a rate); nothing is created.
+// not exist. Estimates are computed for every asset payable for the
+// invoice's merchant whatever the invoice status (null without a rate);
+// nothing is created.
 func (s *Service) Checkout(ctx context.Context, id uuid.UUID) (Checkout, error) {
 	v, err := s.GetView(ctx, id)
 	if err != nil {

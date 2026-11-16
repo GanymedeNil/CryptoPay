@@ -13,7 +13,11 @@ export function chainHealth(c: Chain): ChainHealth {
 
 export type NotPayableReason = "disabled" | "noWallet" | "noRpc";
 
-/** Why `payable` is false (payable = enabled && wallet assigned && rpc configured). */
+/**
+ * Why `payable` is false (payable = enabled && default wallet assigned && rpc
+ * configured). Merchants with their own wallet on the chain (`merchant_wallets`)
+ * can be paid even without a default wallet.
+ */
 export function notPayableReasons(c: Chain): NotPayableReason[] {
   if (c.payable) return [];
   const out: NotPayableReason[] = [];
@@ -21,6 +25,14 @@ export function notPayableReasons(c: Chain): NotPayableReason[] {
   if (!c.wallet_id) out.push("noWallet");
   if (c.rpc_urls.length === 0) out.push("noRpc");
   return out;
+}
+
+/**
+ * Whether the chain receives payments for at least some merchants: payable
+ * through its default wallet, or enabled with merchant wallets (and RPC).
+ */
+export function receivesPayments(c: Chain): boolean {
+  return c.payable || (c.enabled && c.merchant_wallets > 0 && c.rpc_urls.length > 0);
 }
 
 /** Mainnets first, then testnets; catalog order is preserved inside each group. */

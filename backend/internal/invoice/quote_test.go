@@ -489,7 +489,7 @@ func TestEstimates(t *testing.T) {
 	v := e.Create("10", "USD")
 	est, err := e.Invoices.Estimates(e.Ctx, v.Invoice)
 	require.NoError(t, err)
-	payable, err := e.Store.ListPayableAssets(e.Ctx)
+	payable, err := e.Store.ListPayableAssets(e.Ctx, e.Merchant.ID)
 	require.NoError(t, err)
 	require.Len(t, est, len(payable))
 	byID := map[string]*big.Int{}

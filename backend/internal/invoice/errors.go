@@ -28,8 +28,9 @@ var (
 	// cancelled invoice as paid, assigning an already matched transfer.
 	// → 409 conflict.
 	ErrConflict = errors.New("invoice: action not allowed in the current state")
-	// ErrAssetUnavailable: the asset is unknown or not payable right now
-	// (asset or chain disabled, no wallet assigned, wallet misconfigured).
+	// ErrAssetUnavailable: the asset is unknown or not payable right now for
+	// the invoice's merchant (asset or chain disabled, neither a merchant
+	// wallet nor a default wallet on the chain, wallet misconfigured).
 	// → 422 unprocessable.
 	ErrAssetUnavailable = errors.New("invoice: asset not available for payment")
 	// ErrRateUnavailable: no exchange rate could be obtained for the asset /
