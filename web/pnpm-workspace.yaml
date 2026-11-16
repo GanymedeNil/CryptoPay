@@ -1,0 +1,8 @@
+ignoredBuiltDependencies:
+  - sharp
+  - unrs-resolver
+  # Optional native speed-ups of wallet libraries; pure-JS fallbacks are used.
+  - bigint-buffer
+  - bufferutil
+  - keccak
+  - utf-8-validate
