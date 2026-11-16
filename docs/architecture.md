@@ -169,8 +169,10 @@ software holding the seed; it is deliberately out of scope for the server.
 
 One loop per enabled chain with a default wallet **or at least one merchant
 wallet** (`chains.wallet_id IS NOT NULL OR` a `merchant_wallets` row). A
-chain left without either stops being scanned, also while quotes created
-earlier are still watched — keep a wallet on the chain until they are closed.
+chain left without either keeps being scanned for as long as quotes created
+earlier are still watched on it, so unassigning a wallet never strands an
+in-flight invoice; it stops once those quotes are paid or closed. Disabling
+a chain stops scanning immediately.
 Matching does not care whose wallet an address belongs to: it is by
 (chain, address, asset[, exact amount]) of the live quotes, so merchants with
 different wallets on one chain are credited independently, and two merchants

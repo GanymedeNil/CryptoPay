@@ -59,12 +59,6 @@ func TestChainWithOnlyMerchantWalletsIsScanned(t *testing.T) {
 	assert.Equal(t, 1, res.NewTransfers)
 	assert.Equal(t, domain.InvoiceConfirming, h.status(v.ID))
 
-	// The last binding gone (and no default wallet): the chain is idle again.
-	_, err = h.Store.DeleteMerchantWallet(h.Ctx, shop.ID, "base")
-	require.NoError(t, err)
-	res, err = h.M.TickOnce(h.Ctx, "base")
-	require.NoError(t, err)
-	assert.Equal(t, scanner.SkipInactive, res.Skipped)
 }
 
 // TestMerchantWalletsCreditedIndependently: two merchants with their own
@@ -117,4 +111,39 @@ func TestMerchantWalletsCreditedIndependently(t *testing.T) {
 		}
 		assert.Equal(t, []string{domain.EventConfirming, domain.EventPaid}, h.EventTypes(tc.inv.ID))
 	}
+}
+
+// TestChainKeepsScanningWhileQuotesAreLive: unassigning the last wallet of a
+// chain must not strand an invoice that is still waiting for its payment.
+func TestChainKeepsScanningWhileQuotesAreLive(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	base := scannertest.NewFakeChain(500)
+	h.Provider.Set("base", base)
+
+	shop, _ := h.merchantWithWallet("base", "m/44'/60'/2'")
+	h.tick("base")
+	v, q := h.invoiceFor(shop, "usdc-base")
+
+	removed, err := h.Store.DeleteMerchantWallet(h.Ctx, shop.ID, "base")
+	require.NoError(t, err)
+	require.True(t, removed)
+	c := h.chain("base")
+	require.Nil(t, c.WalletID)
+	require.Zero(t, c.MerchantWallets)
+	require.Equal(t, 1, c.LiveQuotes)
+
+	base.Pay(501, "0xbase-late", q.Address, h.contract("usdc-base"), q.AmountDue)
+	base.SetHead(501)
+	res := h.tick("base")
+	assert.Empty(t, res.Skipped, "still scanned: a quote is live")
+	assert.Equal(t, 1, res.NewTransfers)
+	assert.Equal(t, domain.InvoiceConfirming, h.status(v.ID))
+
+	// Once nothing is watched any more the chain goes idle.
+	_, err = h.Store.Pool().Exec(h.Ctx, `UPDATE quotes SET status = 'closed' WHERE chain_id = 'base'`)
+	require.NoError(t, err)
+	out, err := h.M.TickOnce(h.Ctx, "base")
+	require.NoError(t, err)
+	assert.Equal(t, scanner.SkipInactive, out.Skipped)
 }

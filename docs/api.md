@@ -293,9 +293,9 @@ See `architecture.md`, "Receiving wallets".
 * Existing quotes keep the wallet and address they were created with:
   setting, changing or removing a merchant wallet (or a chain's default
   wallet) only affects quotes created afterwards. A customer who already
-  sees an address on the checkout of an unpaid invoice can still pay it — as
-  long as the chain is still scanned, i.e. keeps a default wallet or at least
-  one merchant wallet (`architecture.md`, "Scanner").
+  sees an address on the checkout of an unpaid invoice can still pay it: a
+  chain keeps being scanned while it has live quotes, even after its last
+  wallet was unassigned (`architecture.md`, "Scanner").
 * `merchant.wallet.set` / `merchant.wallet.unset` are written to the audit
   log (`target_type` `merchant`, `detail.chain_id`, `detail.wallet_id`);
   removing a binding that does not exist changes nothing and is not logged.

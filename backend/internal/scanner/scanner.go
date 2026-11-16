@@ -134,7 +134,7 @@ func (c Config) withDefaults() Config {
 
 // Reasons a tick did not run (TickResult.Skipped).
 const (
-	SkipInactive = "inactive" // chain disabled, or neither a default nor a merchant wallet
+	SkipInactive = "inactive" // chain disabled, or no wallet of any kind and no live quotes
 	SkipLocked   = "locked"   // another instance is scanning the chain
 )
 
@@ -257,11 +257,15 @@ func (m *Manager) Run(ctx context.Context) error {
 	}
 }
 
-// active reports whether a chain is scanned: enabled, with a default wallet
-// or at least one merchant-specific wallet. Matching is by (chain, address,
-// asset[, exact amount]) of the live quotes, so whose wallet an address
-// belongs to does not matter.
-func active(c domain.Chain) bool { return c.Enabled && (c.WalletID != nil || c.MerchantWallets > 0) }
+// active reports whether a chain is scanned: enabled, and either it has a
+// wallet (a default one or at least one merchant-specific one) or quotes
+// created earlier are still being watched on it. The latter keeps payments
+// to in-flight invoices detectable after every wallet was unassigned.
+// Matching is by (chain, address, asset[, exact amount]) of the live quotes,
+// so whose wallet an address belongs to does not matter.
+func active(c domain.Chain) bool {
+	return c.Enabled && (c.WalletID != nil || c.MerchantWallets > 0 || c.LiveQuotes > 0)
+}
 
 // runChain ticks one chain until ctx is cancelled.
 func (m *Manager) runChain(ctx context.Context, chainID string) {
@@ -345,7 +349,7 @@ func (m *Manager) Backoff(failures int) time.Duration {
 // call, and is exported for "scan now" actions and tests.
 //
 // The tick is skipped (no error) when the chain is disabled or has no
-// wallet at all — neither a default nor a merchant wallet — (SkipInactive)
+// wallet at all and no quotes still being watched (SkipInactive)
 // or another instance holds the chain's lock
 // (SkipLocked). An error means the tick could not complete; progress made
 // before the error is kept, the failing range is retried by the next tick,

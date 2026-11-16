@@ -50,6 +50,9 @@ type Chain struct {
 	// this chain (read-only, computed by the store). A chain without a
 	// default wallet still receives payments for those merchants.
 	MerchantWallets int
+	// LiveQuotes is the number of quotes on this chain that are still watched
+	// (status active or superseded). Computed on read.
+	LiveQuotes int
 
 	// Scanner state.
 	ScanCursor uint64 // last fully scanned block (0 = never scanned)
