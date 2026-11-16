@@ -48,6 +48,7 @@ func TestLoadDefaults(t *testing.T) {
 	assert.False(t, c.TrustProxyHeaders)
 	assert.Empty(t, c.TrustedProxies)
 	assert.True(t, c.ScannerEnabled)
+	assert.True(t, c.WebhookAllowPrivate, "development allows private webhook targets by default")
 }
 
 func TestLoadAll(t *testing.T) {
@@ -85,6 +86,31 @@ func TestLoadAll(t *testing.T) {
 	assert.True(t, c.IsTrustedProxy(netip.MustParseAddr("::ffff:10.1.2.3")))
 	assert.False(t, c.IsTrustedProxy(netip.MustParseAddr("8.8.8.8")))
 	assert.False(t, c.ScannerEnabled)
+	assert.False(t, c.WebhookAllowPrivate, "production refuses private webhook targets by default")
+}
+
+func TestWebhookAllowPrivate(t *testing.T) {
+	cases := []struct {
+		env, flag string
+		want      bool
+	}{
+		{"development", "", true},
+		{"development", "false", false},
+		{"production", "", false},
+		{"production", "true", true},
+		{"production", "0", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.env+"/"+tc.flag, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("APP_ENV", tc.env)
+			t.Setenv("WEBHOOK_ALLOW_PRIVATE", tc.flag)
+			c, err := Load()
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, c.WebhookAllowPrivate)
+			assert.Contains(t, c.String(), "webhook_allow_private")
+		})
+	}
 }
 
 func TestTrustProxyFlags(t *testing.T) {
@@ -138,6 +164,7 @@ func TestValidationErrors(t *testing.T) {
 		{"origin with path", map[string]string{"CORS_ORIGINS": "https://ok.example/path"}, "CORS_ORIGINS"},
 		{"bad proxy", map[string]string{"TRUSTED_PROXIES": "10.0.0.0/33"}, "TRUSTED_PROXIES"},
 		{"bad trust flag", map[string]string{"TRUST_PROXY_HEADERS": "sometimes"}, "TRUST_PROXY_HEADERS"},
+		{"bad private webhook flag", map[string]string{"WEBHOOK_ALLOW_PRIVATE": "perhaps"}, "WEBHOOK_ALLOW_PRIVATE"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

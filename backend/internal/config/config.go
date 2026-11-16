@@ -17,6 +17,8 @@
 //	TRUSTED_PROXIES       comma separated IPs/CIDRs of trusted reverse proxies; setting it
 //	                      implies TRUST_PROXY_HEADERS (a bool value is accepted as an alias)
 //	SCANNER_ENABLED       bool: run the chain scanners in this process [true]
+//	WEBHOOK_ALLOW_PRIVATE bool: let webhooks target loopback / private networks
+//	                      [true in development, false in production]
 //	RPC_<CHAIN_ID>        per-chain RPC URLs, see RPCFromEnv
 package config
 
@@ -77,6 +79,12 @@ type Config struct {
 
 	// ScannerEnabled runs the chain scanners and background workers.
 	ScannerEnabled bool
+
+	// WebhookAllowPrivate disables the webhook dispatcher's SSRF guard so
+	// merchant endpoints on loopback / private networks can be reached
+	// (local development, docker-compose). It defaults to true only when
+	// APP_ENV is development; an explicit WEBHOOK_ALLOW_PRIVATE wins.
+	WebhookAllowPrivate bool
 }
 
 // Production reports whether APP_ENV is production.
@@ -129,6 +137,7 @@ func (c Config) LogValue() slog.Value {
 		slog.Bool("trust_proxy_headers", c.TrustProxyHeaders),
 		slog.String("trusted_proxies", strings.Join(proxies, ",")),
 		slog.Bool("scanner_enabled", c.ScannerEnabled),
+		slog.Bool("webhook_allow_private", c.WebhookAllowPrivate),
 	)
 }
 
@@ -266,6 +275,9 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 
 	if c.ScannerEnabled, err = parseBool(get("SCANNER_ENABLED"), true); err != nil {
 		fail("SCANNER_ENABLED: %v", err)
+	}
+	if c.WebhookAllowPrivate, err = parseBool(get("WEBHOOK_ALLOW_PRIVATE"), c.Env == EnvDevelopment); err != nil {
+		fail("WEBHOOK_ALLOW_PRIVATE: %v", err)
 	}
 
 	if len(errs) > 0 {

@@ -3,7 +3,7 @@ module cryptopay
 go 1.27.3
 
 require (
-	github.com/btcsuite/btcd/btcec/v2 v2.1.3
+	github.com/btcsuite/btcd v0.24.2
 	github.com/btcsuite/btcd/btcutil v1.1.6
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/google/uuid v1.6.0
@@ -16,7 +16,7 @@ require (
 )
 
 require (
-	github.com/btcsuite/btcd v0.24.2 // indirect
+	github.com/btcsuite/btcd/btcec/v2 v2.1.3 // indirect
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
