@@ -13,11 +13,14 @@ export function InvoiceStub({
   now,
   clockOffsetMs,
   showCountdown,
+  aside,
 }: {
   invoice: CheckoutInvoice;
   now: number;
   clockOffsetMs: number;
   showCountdown: boolean;
+  /** Shown top-right when there is no countdown (e.g. the PAID stamp). */
+  aside?: React.ReactNode;
 }) {
   const t = useT();
   const { locale } = useLocale();
@@ -29,12 +32,12 @@ export function InvoiceStub({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 space-y-0.5">
           <p className="text-[11px] font-semibold tracking-[0.14em] text-muted-foreground uppercase">
             {t("checkout.merchantLabel")}
           </p>
-          <p className="truncate font-heading text-base font-semibold">{invoice.merchant_name}</p>
+          <p className="line-clamp-2 font-heading text-base font-semibold break-words">{invoice.merchant_name}</p>
         </div>
         {showCountdown && (
           <div
@@ -51,6 +54,7 @@ export function InvoiceStub({
             </time>
           </div>
         )}
+        {!showCountdown && aside}
       </div>
 
       <div className="space-y-1">

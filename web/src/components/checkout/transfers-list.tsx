@@ -74,8 +74,8 @@ export function TransfersList({ transfers, className }: { transfers: Transfer[];
                   </p>
                 </div>
               )}
-              <div className="flex items-center justify-between gap-3 text-xs">
-                <span className="font-mono text-muted-foreground" translate="no" title={tr.tx_hash}>
+              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs">
+                <span className="font-mono whitespace-nowrap text-muted-foreground" translate="no" title={tr.tx_hash}>
                   <span className="sr-only">{t("checkout.transfers.txHash")}: </span>
                   {shortenHash(tr.tx_hash)}
                 </span>
@@ -84,7 +84,7 @@ export function TransfersList({ transfers, className }: { transfers: Transfer[];
                     href={url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-0.5 font-medium text-primary underline-offset-4 hover:underline focus-visible:underline"
+                    className="inline-flex items-center gap-0.5 font-medium whitespace-nowrap text-primary underline-offset-4 hover:underline focus-visible:underline"
                   >
                     {t("checkout.transfers.viewOnExplorer")}
                     <ArrowUpRightIcon className="size-3.5" aria-hidden />

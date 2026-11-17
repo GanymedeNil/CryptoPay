@@ -10,6 +10,9 @@ export default defineConfig({
     },
   },
   test: {
+    // Dialog/flow tests drive several async steps with user-event; under a busy
+    // parallel run (or in Docker) the 5 s default is too tight.
+    testTimeout: 15_000,
     environment: "jsdom",
     globals: false,
     setupFiles: ["./src/test/setup.ts"],

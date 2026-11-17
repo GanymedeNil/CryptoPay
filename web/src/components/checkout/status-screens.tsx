@@ -111,18 +111,22 @@ export function PaidScreen({ view }: { view: CheckoutView }) {
       />
 
       {quote && (
-        <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2.5 rounded-xl border bg-background/50 p-4 text-sm">
-          <dt className="text-muted-foreground">{t("checkout.paid.amountPaid")}</dt>
-          <dd className="text-right font-mono font-semibold tabular" translate="no">
-            {formatAmount(isZeroDecimal(quote.amount_confirmed) ? quote.amount : quote.amount_confirmed)} {quote.symbol}
-          </dd>
-          <dt className="text-muted-foreground">{t("checkout.paid.network")}</dt>
-          <dd className="text-right">{networkLabel(quote)}</dd>
+        <dl className="space-y-2.5 rounded-xl border bg-background/50 p-4 text-sm">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5">
+            <dt className="text-muted-foreground">{t("checkout.paid.amountPaid")}</dt>
+            <dd className="ml-auto text-right font-mono font-semibold tabular" translate="no">
+              {formatAmount(isZeroDecimal(quote.amount_confirmed) ? quote.amount : quote.amount_confirmed)} {quote.symbol}
+            </dd>
+          </div>
+          <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5">
+            <dt className="text-muted-foreground">{t("checkout.paid.network")}</dt>
+            <dd className="ml-auto text-right">{networkLabel(quote)}</dd>
+          </div>
           {invoice.paid_at && (
-            <>
+            <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5">
               <dt className="text-muted-foreground">{t("checkout.paid.paidAt")}</dt>
-              <dd className="text-right tabular">{formatDateTime(invoice.paid_at, locale)}</dd>
-            </>
+              <dd className="ml-auto text-right whitespace-nowrap tabular">{formatDateTime(invoice.paid_at, locale)}</dd>
+            </div>
           )}
         </dl>
       )}

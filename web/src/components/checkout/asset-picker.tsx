@@ -13,18 +13,42 @@ import { cn } from "@/lib/utils";
 import { CoinMark } from "./coin-mark";
 import { networkLabel, NetworkName, TestnetBadge } from "./network-badge";
 
-function Estimate({ asset }: { asset: CheckoutAsset }) {
+/** Approximate amount in the asset (placed by the row's grid, see `ROW_GRID`). */
+function Estimate({ asset, className }: { asset: CheckoutAsset; className?: string }) {
   const t = useT();
   if (asset.estimated_amount === null) {
-    return <span className="text-xs text-muted-foreground">{t("checkout.select.noRate")}</span>;
+    return <span className={cn("text-xs text-muted-foreground", className)}>{t("checkout.select.noRate")}</span>;
   }
   return (
-    <span className="font-mono text-sm tabular text-foreground/85">
+    <span className={cn("font-mono text-sm whitespace-nowrap tabular text-foreground/85", className)}>
       {t("checkout.select.estimated", { amount: formatAmount(asset.estimated_amount, { keepScale: true }) })}{" "}
       <span className="text-xs text-muted-foreground">{asset.symbol}</span>
     </span>
   );
 }
+
+/**
+ * Rows are grids so the estimate is rendered once yet moves with the screen:
+ * on phones it sits on a second line under the label, from `sm` up it is a
+ * right-hand column. Columns: [coin mark] · label · estimate · chevron.
+ */
+const ROW_GRID = {
+  /** Coin rows (with a coin mark). */
+  coin: {
+    row: "grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 sm:grid-cols-[auto_minmax(0,1fr)_auto_auto]",
+    mark: "row-span-2 sm:row-span-1",
+    label: "col-start-2",
+    estimate: "col-start-2 mt-0.5 sm:col-start-3 sm:row-start-1 sm:mt-0",
+    end: "col-start-3 row-span-2 row-start-1 sm:col-start-4 sm:row-span-1",
+  },
+  /** Network rows inside an expanded coin (no coin mark). */
+  network: {
+    row: "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 sm:grid-cols-[minmax(0,1fr)_auto_auto]",
+    label: "col-start-1",
+    estimate: "col-start-1 mt-0.5 sm:col-start-2 sm:row-start-1 sm:mt-0",
+    end: "col-start-2 row-span-2 row-start-1 sm:col-start-3 sm:row-span-1",
+  },
+};
 
 export function AssetPicker({
   assets,
@@ -115,11 +139,11 @@ function CoinRow({
   const t = useT();
   const panelId = useId();
   const single = group.assets.length === 1 ? group.assets[0] : null;
-  const head = (
+  const head = (grid?: typeof ROW_GRID.coin) => (
     <>
-      <CoinMark symbol={group.symbol} />
-      <span className="min-w-0 flex-1">
-        <span className="flex items-center gap-2">
+      <CoinMark symbol={group.symbol} className={grid?.mark} />
+      <span className={cn("min-w-0 flex-1", grid?.label)}>
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <span className="font-semibold">{group.symbol}</span>
           {group.allTestnet && <TestnetBadge />}
         </span>{" "}
@@ -138,10 +162,17 @@ function CoinRow({
           type="button"
           disabled={disabled}
           onClick={() => onSelect(single)}
-          className="flex w-full items-center gap-3 px-4 py-3.5 text-left transition-colors outline-none hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset disabled:cursor-not-allowed disabled:opacity-60"
+          className={cn(
+            ROW_GRID.coin.row,
+            "w-full px-4 py-3.5 text-left transition-colors outline-none hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset disabled:cursor-not-allowed disabled:opacity-60",
+          )}
         >
-          {head} <Estimate asset={single} />
-          {pending ? <Spinner className="size-4" /> : <ChevronRightIcon className="size-4 text-muted-foreground" aria-hidden />}
+          {head(ROW_GRID.coin)} <Estimate asset={single} className={ROW_GRID.coin.estimate} />
+          {pending ? (
+            <Spinner className={cn("size-4", ROW_GRID.coin.end)} />
+          ) : (
+            <ChevronRightIcon className={cn("size-4 text-muted-foreground", ROW_GRID.coin.end)} aria-hidden />
+          )}
         </button>
       </li>
     );
@@ -156,7 +187,7 @@ function CoinRow({
         onClick={onToggle}
         className="flex w-full items-center gap-3 px-4 py-3.5 text-left transition-colors outline-none hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset"
       >
-        {head}
+        {head()}
         <ChevronDownIcon
           className={cn("size-4 text-muted-foreground transition-transform", open && "rotate-180")}
           aria-hidden
@@ -173,9 +204,12 @@ function CoinRow({
                   type="button"
                   disabled={disabled}
                   onClick={() => onSelect(a)}
-                  className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors outline-none hover:bg-card focus-visible:bg-card focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-60"
+                  className={cn(
+                    ROW_GRID.network.row,
+                    "w-full rounded-lg px-3 py-2.5 text-left transition-colors outline-none hover:bg-card focus-visible:bg-card focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-60",
+                  )}
                 >
-                  <span className="min-w-0 flex-1">
+                  <span className={cn("min-w-0", ROW_GRID.network.label)}>
                     <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm font-medium">
                       <NetworkName asset={a} />
                       {a.is_testnet && !group.allTestnet && (
@@ -186,11 +220,11 @@ function CoinRow({
                       )}
                     </span>
                   </span>{" "}
-                  <Estimate asset={a} />
+                  <Estimate asset={a} className={ROW_GRID.network.estimate} />
                   {pending ? (
-                    <Spinner className="size-4" />
+                    <Spinner className={cn("size-4", ROW_GRID.network.end)} />
                   ) : (
-                    <ChevronRightIcon className="size-4 text-muted-foreground" aria-hidden />
+                    <ChevronRightIcon className={cn("size-4 text-muted-foreground", ROW_GRID.network.end)} aria-hidden />
                   )}
                 </button>
               </li>

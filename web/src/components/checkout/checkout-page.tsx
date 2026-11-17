@@ -142,10 +142,10 @@ export function CheckoutPage({ invoiceId, api }: { invoiceId: string; api?: Chec
                 clockOffsetMs={clockOffsetMs}
                 // Once the full amount is seen the deadline no longer matters to the customer.
                 showCountdown={open && data.invoice.status !== "confirming"}
+                aside={screen === "paid" ? <PaidStamp label={t("checkout.paid.stamp")} /> : undefined}
               />
             ) : undefined
           }
-          stamp={screen === "paid" ? <PaidStamp label={t("checkout.paid.stamp")} /> : undefined}
         >
           <ScreenBody
             screen={screen}

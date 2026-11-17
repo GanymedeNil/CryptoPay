@@ -7,13 +7,10 @@ import { cn } from "@/lib/utils";
  */
 export function Slip({
   stub,
-  stamp,
   children,
   className,
 }: {
   stub?: React.ReactNode;
-  /** Overlay on the band, e.g. the PAID stamp. */
-  stamp?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
 }) {
@@ -29,22 +26,25 @@ export function Slip({
         <>
           <div className="relative overflow-hidden rounded-t-2xl bg-slip-band">
             <Guilloche className="absolute inset-0 h-full w-full opacity-[0.22] dark:opacity-[0.16]" />
-            <div className="relative px-5 pt-5 pb-6 sm:px-7 sm:pt-6">{stub}</div>
-            {stamp}
+            <div className="relative px-5 pt-5 pb-6 max-[359px]:px-4 sm:px-7 sm:pt-6">{stub}</div>
           </div>
           <div className="slip-perforation" aria-hidden />
         </>
       )}
-      <div className="px-5 pt-5 pb-6 sm:px-7 sm:pt-6 sm:pb-7">{children}</div>
+      <div className="px-5 pt-5 pb-6 max-[359px]:px-4 sm:px-7 sm:pt-6 sm:pb-7">{children}</div>
     </article>
   );
 }
 
-/** Rubber "PAID" stamp, pressed onto the band when the invoice is paid. */
+/**
+ * Rubber "PAID" stamp, pressed onto the band when the invoice is paid. It
+ * sits in the stub's right-hand slot (where the countdown was), so a long
+ * merchant name wraps beside it instead of running underneath.
+ */
 export function PaidStamp({ label }: { label: string }) {
   return (
-    <div className="pointer-events-none absolute top-4 right-4 sm:top-5 sm:right-6" aria-hidden>
-      <div className="animate-stamp rounded-md border-[2.5px] border-success px-2.5 py-1 font-heading text-lg font-bold tracking-[0.18em] text-success uppercase opacity-90 mix-blend-multiply dark:mix-blend-screen">
+    <div className="pointer-events-none shrink-0" aria-hidden>
+      <div className="animate-stamp rounded-md border-[2.5px] border-success px-2 py-0.5 font-heading text-base font-bold tracking-[0.14em] whitespace-nowrap text-success uppercase opacity-90 mix-blend-multiply sm:px-2.5 sm:py-1 sm:text-lg sm:tracking-[0.18em] dark:mix-blend-screen">
         {label}
       </div>
     </div>
