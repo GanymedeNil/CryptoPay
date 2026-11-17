@@ -240,3 +240,7 @@ Before going live, work through the [production checklist](docs/production.md#pr
 ## Tech stack
 
 Go (HTTP API, chain scanners, webhook delivery) · Next.js 16, React 19, Tailwind CSS and shadcn/ui (checkout and console) · PostgreSQL · Docker Compose. The repository layout is described in [docs/architecture.md](docs/architecture.md); run the tests with `make test`.
+
+## License
+
+[MIT](LICENSE) © GanymedeNil
