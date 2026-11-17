@@ -8,7 +8,16 @@ import { chainHealth, isMaskedRpcUrl, isRpcUrl, notPayableReasons, receivesPayme
 import { applyFieldErrors, describeError, errorKind } from "./errors";
 import { addressLink, fillExplorerTemplate, safeHttpUrl, txLink } from "./explorer";
 import { formToSettings, recipientProblem, settingsSchema, settingsToForm } from "./settings-form";
-import { EMAIL_KINDS, emailKindLabel } from "./two-factor";
+import {
+  EMAIL_KINDS,
+  emailKindLabel,
+  groupSecret,
+  isLoginChallenge,
+  normalizeOtp,
+  normalizeRecoveryCode,
+  recoveryCodesFileName,
+  recoveryCodesText,
+} from "./two-factor";
 import { canWrite, isOwner } from "./roles";
 import { buildTimeline } from "./timeline";
 import { intParam, patchSearchParams } from "./url-state";
@@ -283,21 +292,47 @@ describe("invoice timeline", () => {
   });
 });
 
-describe("e-mail kinds", () => {
+describe("two-factor helpers", () => {
+  it("normalises typed / pasted codes", () => {
+    expect(normalizeOtp("123 456")).toBe("123456");
+    expect(normalizeOtp("Code: 654-321!")).toBe("654321");
+    expect(normalizeOtp("1234567890")).toBe("123456");
+    expect(normalizeRecoveryCode("  ABCDE-12345 ")).toBe("abcde-12345");
+    expect(groupSecret("JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP")).toBe("JBSW Y3DP EHPK 3PXP JBSW Y3DP EHPK 3PXP");
+    expect(groupSecret("ABCDEF", 4)).toBe("ABCD EF");
+  });
+
+  it("recognises the 202 login challenge", () => {
+    expect(isLoginChallenge({ two_factor_required: true, challenge_token: "x", expires_at: "2026-01-01T00:00:00Z" })).toBe(true);
+    expect(
+      isLoginChallenge({ id: "u", email: "a@b.c", role: "owner", active: true, last_login_at: null, created_at: "", two_factor_enabled: true }),
+    ).toBe(false);
+    expect(isLoginChallenge(null)).toBe(false);
+  });
+
+  it("builds the recovery-codes file", () => {
+    const text = recoveryCodesText(t, { email: "owner@cryptopay.test", codes: ["aaaaa-bbbbb", "ccccc-ddddd"], generatedAt: new Date("2026-11-17T08:00:00.123Z") });
+    expect(text).toContain("CryptoPay recovery codes");
+    expect(text).toContain("Account: owner@cryptopay.test");
+    expect(text).toContain("Generated: 2026-11-17 08:00:00 UTC");
+    expect(text).toContain(" 1. aaaaa-bbbbb\n 2. ccccc-ddddd");
+    expect(recoveryCodesFileName("Owner+Ops@CryptoPay.test")).toBe("cryptopay-recovery-codes-owner-ops-cryptopay.test.txt");
+  });
+
   it("labels every documented e-mail kind", () => {
-    expect(EMAIL_KINDS).toHaveLength(11);
-    expect(new Set(EMAIL_KINDS.map((k) => k.kind)).size).toBe(11);
+    expect(EMAIL_KINDS).toHaveLength(16);
+    expect(new Set(EMAIL_KINDS.map((k) => k.kind)).size).toBe(16);
     expect(emailKindLabel(t, "alert.scanner_failing")).toBe("Scanner failing");
     expect(emailKindLabel(t, "security.unknown_future_kind")).toBe("security.unknown_future_kind");
     for (const k of EMAIL_KINDS) expect(emailKindLabel(t, k.kind)).not.toContain("admin.");
   });
 });
 
-describe("settings form · e-mail", () => {
+describe("settings form · security and e-mail", () => {
   it("round-trips the new settings and validates recipients", () => {
-    const s = { ...SETTINGS, alert_emails: true, alert_recipients: ["ops@example.com"], email_locale: "en" as const };
+    const s = { ...SETTINGS, require_2fa: true, alert_emails: true, alert_recipients: ["ops@example.com"], email_locale: "en" as const };
     const form = settingsToForm(s);
-    expect(form).toMatchObject({ alert_emails: true, alert_recipients: ["ops@example.com"], email_locale: "en" });
+    expect(form).toMatchObject({ require_2fa: true, alert_recipients: ["ops@example.com"], email_locale: "en" });
     expect(formToSettings(form)).toEqual(s);
     expect(formToSettings({ ...form, alert_recipients: [" cfo@example.com "] }).alert_recipients).toEqual(["cfo@example.com"]);
 
@@ -314,5 +349,11 @@ describe("settings form · e-mail", () => {
     expect(recipientProblem(t, ["ops@example.com"], "OPS@example.com")).toBe("This address is already in the list");
     expect(recipientProblem(t, [], "ops")).toBe("Enter a valid email address");
     expect(recipientProblem(t, Array.from({ length: 10 }, (_, i) => `u${i}@example.com`), "x@example.com")).toBe("At most 10 recipients");
+  });
+
+  it("describes the two_factor_setup_required error", () => {
+    const e = new ApiError({ status: 403, code: "two_factor_setup_required", message: "setup first" });
+    expect(describeError(t, e)).toBe("Two-step verification must be enabled for your account first.");
+    expect(errorKind(e)).toBe("forbidden");
   });
 });

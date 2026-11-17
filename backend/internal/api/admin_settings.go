@@ -56,6 +56,7 @@ func (a *API) adminPutSettings(w http.ResponseWriter, r *http.Request) {
 		WebhookTimeoutSeconds  *int      `json:"webhook_timeout_seconds"`
 		CheckoutBaseURL        *string   `json:"checkout_base_url"`
 		WalletConnectProjectID *string   `json:"walletconnect_project_id"`
+		Require2FA             *bool     `json:"require_2fa"`
 		SecurityEmails         *bool     `json:"security_emails"`
 		AlertEmails            *bool     `json:"alert_emails"`
 		AlertRecipients        *[]string `json:"alert_recipients"`
@@ -111,6 +112,7 @@ func (a *API) adminPutSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		return *v
 	}
+	next.Require2FA = boolField("require_2fa", body.Require2FA)
 	next.SecurityEmails = boolField("security_emails", body.SecurityEmails)
 	next.AlertEmails = boolField("alert_emails", body.AlertEmails)
 	next.AlertRecipients = checkRecipients(f, body.AlertRecipients)
@@ -124,6 +126,13 @@ func (a *API) adminPutSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := f.err(); err != nil {
 		a.fail(w, r, err)
+		return
+	}
+	ad, _ := adminFrom(ctx)
+	if next.Require2FA && !ad.User.TwoFactorEnabled() {
+		a.fail(w, r, &Error{Status: http.StatusConflict, Code: CodeConflict,
+			Message: "turn on two-factor authentication for your own account before requiring it for every admin",
+			Fields:  map[string]string{"require_2fa": "enable two-factor authentication for your own account first"}})
 		return
 	}
 	var out domain.Settings
@@ -371,6 +380,9 @@ func (a *API) adminUpdateUser(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			detail["sessions_revoked"] = n
+			if _, err := tx.DeleteUserLoginChallenges(ctx, id); err != nil {
+				return err
+			}
 		}
 		detail["email"] = cur.Email
 		if err := a.audit(ctx, tx, nil, auditEntry{Action: "user.update", TargetType: "admin_user", TargetID: id.String(), Detail: detail}); err != nil {

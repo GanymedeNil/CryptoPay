@@ -12,7 +12,8 @@ in TypeScript notation.
   integer strings in base units. Never numbers.
 * Errors: non-2xx with `{ "error": { "code": string, "message": string, "fields"?: Record<string,string> } }`.
   Codes: `invalid_request` 400, `unauthorized` 401, `forbidden` 403, `not_found` 404,
-  `conflict` 409, `unprocessable` 422, `rate_limited` 429, `internal` 500, `unavailable` 503.
+  `conflict` 409, `unprocessable` 422, `rate_limited` 429, `internal` 500, `unavailable` 503,
+  and `two_factor_setup_required` 403 (admin API only, see "Two-factor authentication").
 * Lists: query `page` (1-based, default 1), `page_size` (default 20, max 100) →
   `Page<T> = { items: T[]; total: number; page: number; page_size: number }`.
 * `GET /healthz` → `{status:"ok"}`; `GET /readyz` checks the database.
@@ -172,13 +173,18 @@ The checkout page polls `GET` every 3 s while the invoice is open.
 
 ## 3. Admin API — `/api/admin`
 
-Auth: `POST /auth/login` sets an HttpOnly `cp_session` cookie (SameSite=Lax, 7 days).
+Auth: `POST /auth/login` (and, for accounts with two-factor authentication,
+`POST /auth/login/2fa`) sets an HttpOnly `cp_session` cookie (SameSite=Lax, 7 days).
 All mutating requests must send header `X-Requested-With: cryptopay` (CSRF guard).
-Roles: `owner` > `admin` > `viewer`. Viewers get 403 on every non-GET (except logout / own password).
+Roles: `owner` > `admin` > `viewer`. Viewers get 403 on every non-GET (except logout, own
+password and own two-factor authentication).
 User management is owner-only. Every mutation writes an audit log entry.
 
 ```ts
-interface AdminUser { id: string; email: string; role: "owner"|"admin"|"viewer"; active: boolean; last_login_at: string|null; created_at: string; }
+interface AdminUser { id: string; email: string; role: "owner"|"admin"|"viewer"; active: boolean; last_login_at: string|null; created_at: string; two_factor_enabled: boolean; }
+
+// The first step of a sign-in for an account with two-factor authentication.
+interface LoginChallenge { two_factor_required: true; challenge_token: string; expires_at: string; }
 
 // One row of the e-mail outbox (bodies only in GET /email/outbox/{id}).
 interface EmailMessage {
@@ -233,6 +239,7 @@ interface Settings {
   stablecoin_peg: boolean; rate_markup_bps: number;
   webhook_max_attempts: number; webhook_timeout_seconds: number;
   checkout_base_url: string; walletconnect_project_id: string;
+  require_2fa: boolean;          // every admin must use two-factor authentication
   security_emails: boolean;      // e-mail admins about security events on their own account
   alert_emails: boolean;         // e-mail operational alerts
   alert_recipients: string[];    // max 10 addresses; [] = every active owner
@@ -250,10 +257,15 @@ interface Overview {
 
 | Method & path | Body / query | Response |
 |---|---|---|
-| `POST /auth/login` | `{email, password}` | `AdminUser` (401 on bad credentials; 429 after repeated failures) |
+| `POST /auth/login` | `{email, password}` | `AdminUser` + session cookie for an account without two-factor authentication; `202 LoginChallenge` and **no** cookie for an account with it (401 on bad credentials; 429 after repeated failures) |
+| `POST /auth/login/2fa` | `{ challenge_token: string, code?: string, recovery_code?: string }` (exactly one of `code` / `recovery_code`, else 400 `fields.code`) | `AdminUser` + session cookie (401 `unauthorized` on an unknown, expired or used-up challenge or a wrong code — one generic message; 429 when throttled) |
 | `POST /auth/logout` | | `204` |
-| `GET /auth/me` | | `AdminUser` |
+| `GET /auth/me` | | `AdminUser & { two_factor_setup_required: boolean }` |
 | `POST /auth/password` | `{current_password, new_password}` (min 8 chars) | `204` |
+| `POST /auth/2fa/setup` | `{ current_password }` | `{ secret: string; otpauth_uri: string }` (stores a *pending* secret, replacing an earlier pending one; 409 when two-factor authentication is already enabled) |
+| `POST /auth/2fa/enable` | `{ code }` | `{ recovery_codes: string[] }` (10 codes, shown once; signs out every other session of the user; 409 without a pending secret or when already enabled) |
+| `POST /auth/2fa/disable` | `{ current_password, code }` (`code`: a current code or a recovery code) | `204` (409 while `require_2fa` is on, or when not enabled) |
+| `POST /auth/2fa/recovery-codes` | `{ current_password, code }` (`code`: a current code from the authenticator app) | `{ recovery_codes: string[] }` (a new set of 10; the old set stops working; 409 when not enabled) |
 | `GET /overview` | `days?` (1..365, default 30) | `Overview` |
 | `GET /invoices` | `status?`, `merchant_id?`, `q?` (invoice id, order id, address or tx hash), `from?`, `to?` (RFC 3339), paging | `Page<AdminInvoice>` |
 | `POST /invoices` | `CreateInvoice & { merchant_id: string }` | `201 AdminInvoice` |
@@ -285,11 +297,12 @@ interface Overview {
 | `GET /webhook-events` | `status?`, `merchant_id?`, `invoice_id?`, paging | `Page<WebhookEvent>` |
 | `POST /webhook-events/{id}/retry` | | `WebhookEvent` (re-queued for immediate delivery) |
 | `GET /settings` | | `Settings` |
-| `PUT /settings` | `Settings` | `Settings` (every field required; invalid `alert_recipients` → 400 `fields.alert_recipients`) |
+| `PUT /settings` | `Settings` | `Settings` (every field required; invalid `alert_recipients` → 400 `fields.alert_recipients`; 409 with `fields.require_2fa` when `require_2fa` is turned on by an admin without two-factor authentication) |
 | `GET /users` | | `{ items: AdminUser[] }` |
 | `POST /users` | `{ email, password, role }` | `201 AdminUser` |
 | `PATCH /users/{id}` | `{ role?, active?, password? }` | `AdminUser` (cannot demote/deactivate the last owner) |
 | `DELETE /users/{id}` | | `204` (not yourself, not the last owner) |
+| `DELETE /users/{id}/2fa` | | `204` (owner reset: removes the user's two-factor secret and recovery codes and signs them out everywhere; 409 for yourself — use `POST /auth/2fa/disable` — or when the user has no two-factor authentication) |
 | `GET /audit-logs` | `action?`, `actor?`, paging | `Page<AuditLog>` |
 | `GET /email/status` | | `{ configured: boolean; from: string; host: string }` (`host` only, never credentials; `""` when not configured) |
 | `POST /email/test` | `{ to?: string }` (default: the caller's own address; invalid → 400 `fields.to`) | `{ ok: boolean; error: string }` (sends synchronously; `error` is a sanitized SMTP error; 409 when e-mail is not configured; 429 when used too often; owner/admin) |
@@ -318,6 +331,63 @@ See `architecture.md`, "Receiving wallets".
 * A wallet used by any merchant cannot be deleted (409) until those
   merchants are switched back to the default wallet or to another wallet.
 
+### Two-factor authentication
+
+Time-based one-time passwords (RFC 6238: HMAC-SHA1, 6 digits, 30 s step;
+codes of the previous, current and next step are accepted, each step at most
+once per user). See `architecture.md`, "Admin security".
+
+**Sign-in.**
+
+1. `POST /auth/login {email, password}`. An account without two-factor
+   authentication gets `200 AdminUser` and the session cookie, as before. An
+   account with it gets `202 LoginChallenge` and no cookie: the
+   `challenge_token` is valid for 5 minutes (`expires_at`) and is stored only
+   as a hash. Wrong credentials, throttling and timing are the same for both
+   kinds of accounts.
+2. `POST /auth/login/2fa { challenge_token, code }` — or `recovery_code`
+   instead of `code` — answers `200 AdminUser` with the session cookie. A
+   recovery code is consumed. Every failure is `401 unauthorized` with one
+   generic message (unknown, expired or used-up challenge, wrong code); a
+   challenge is deleted after 5 wrong codes, after which the user must start
+   again at step 1 (clients know `expires_at` and can count attempts to tell
+   the user). Repeated wrong codes for one account (10 within 15 minutes,
+   from any IP and over any number of challenges) answer `429 rate_limited`
+   with `Retry-After`. The route shares the per-IP login rate limit and
+   requires the CSRF header.
+
+**Own account** (any role, a valid session, every call audited; secrets and
+codes never appear in audit details or logs). `current_password` is checked
+first: a wrong one answers `400` with `fields.current_password`; a wrong
+(or already used) code answers `400` with `fields.code`. Wrong passwords and
+codes here count towards the same per-account limit as the sign-in step
+(429).
+
+* `POST /auth/2fa/setup` returns the base32 `secret` and the `otpauth_uri`
+  `otpauth://totp/CryptoPay:<email>?secret=<secret>&issuer=CryptoPay&algorithm=SHA1&digits=6&period=30`
+  (label and parameters URL-escaped) for the authenticator app. The secret is
+  *pending* until `POST /auth/2fa/enable` confirms a code generated from it.
+* `POST /auth/2fa/enable` returns the 10 recovery codes (`xxxxx-xxxxx`,
+  single use; shown only in this response) and signs out the user's other
+  sessions.
+* `POST /auth/2fa/recovery-codes` replaces the recovery codes.
+* `POST /auth/2fa/disable` removes the secret and the recovery codes.
+
+**Enforcement.** While the setting `require_2fa` is on, a signed-in user
+without two-factor authentication gets `403` with error code
+`two_factor_setup_required` on every admin endpoint except `GET /auth/me`,
+`POST /auth/logout`, `POST /auth/password`, `POST /auth/2fa/setup` and
+`POST /auth/2fa/enable`; `GET /auth/me` reports it as
+`two_factor_setup_required: true`. `require_2fa` can only be switched on by
+an admin who has two-factor authentication enabled (409 otherwise), and
+`POST /auth/2fa/disable` answers 409 while it is on.
+
+**Recovery.** An owner can reset another user's two-factor authentication
+with `DELETE /users/{id}/2fa` (the user is signed out everywhere and
+e-mailed). If no owner can sign in any more, the server command
+`gateway reset-2fa --email <address>` does the same (break glass, see
+README).
+
 ### E-mail
 
 E-mail is configured with the `SMTP_*` environment variables (README); it
@@ -331,8 +401,12 @@ attempts, then `failed`). `kind` is one of:
 | kind | sent to | when | throttle |
 |---|---|---|---|
 | `security.new_login` | the user | sign-in from an IP address not seen for the account before (not on the account's first sign-in) | — |
-| `security.login_blocked` | the user | sign-in blocked after repeated failed password attempts | 1 per account per hour |
+| `security.login_blocked` | the user | sign-in blocked after repeated failed attempts (password or two-factor code) | 1 per account per hour |
 | `security.password_changed` | the user | password changed by the user or by an owner | — |
+| `security.2fa_enabled` / `security.2fa_disabled` | the user | two-factor authentication turned on / off by the user | — |
+| `security.2fa_reset` | the user | two-factor authentication reset by an owner (or `gateway reset-2fa`) | — |
+| `security.recovery_codes` | the user | recovery codes regenerated | — |
+| `security.recovery_code_used` | the user | a recovery code was used to sign in (with the number left) | — |
 | `security.account_created` / `security.role_changed` / `security.account_deactivated` / `security.account_reactivated` | the user | an owner created the account, changed its role, deactivated or reactivated it | — |
 | `alert.webhook_failed` | alert recipients | a webhook event exhausted its retries | 1 per merchant per hour |
 | `alert.transfer_unmatched` | alert recipients | a transfer was stored without a matching invoice | 1 per chain per hour |

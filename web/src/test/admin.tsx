@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, type RenderOptions } from "@testing-library/react";
 import { AuthProvider } from "@/components/admin/auth";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import type { AdminRole, AdminUser, Chain, EmailMessage, Merchant, Settings, Wallet } from "@/lib/api/types";
+import type { AdminMe, AdminRole, AdminUser, Chain, EmailMessage, Merchant, Settings, Wallet } from "@/lib/api/types";
 import type { Locale } from "@/lib/i18n/config";
 import { I18nProvider } from "@/lib/i18n/provider";
 
@@ -14,8 +14,14 @@ export function adminUser(role: AdminRole = "owner", overrides: Partial<AdminUse
     active: true,
     last_login_at: "2026-11-16T07:00:00Z",
     created_at: "2026-01-01T00:00:00Z",
+    two_factor_enabled: false,
     ...overrides,
   };
+}
+
+/** `GET /auth/me` answer for a user. */
+export function adminMe(role: AdminRole = "owner", overrides: Partial<AdminMe> = {}): AdminMe {
+  return { ...adminUser(role), two_factor_setup_required: false, ...overrides };
 }
 
 export function emailFixture(overrides: Partial<EmailMessage> = {}): EmailMessage {
@@ -135,6 +141,7 @@ export const SETTINGS: Settings = {
   webhook_timeout_seconds: 10,
   checkout_base_url: "https://pay.example.com",
   walletconnect_project_id: "",
+  require_2fa: false,
   security_emails: true,
   alert_emails: false,
   alert_recipients: [],

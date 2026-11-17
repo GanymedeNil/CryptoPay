@@ -120,6 +120,29 @@ func TestContractResponses(t *testing.T) {
 	c.ok("POST /api/admin/auth/logout", vc.post("/auth/logout", nil))
 	c.fail("admin 401", vc.get("/auth/me"), http.StatusUnauthorized)
 
+	// ---- admin: two-factor authentication ----
+	mfa := h.newAdmin(domain.RoleViewer) // viewers manage their own 2FA
+	setup := c.ok("POST /api/admin/auth/2fa/setup", mfa.post("/auth/2fa/setup", map[string]any{"current_password": storetest.Password}))
+	secret := setup["secret"].(string)
+	nonEmpty(t, c.ok("POST /api/admin/auth/2fa/enable", mfa.post("/auth/2fa/enable", map[string]any{"code": h.totp(secret)})), "recovery_codes")
+	h.nextStep()
+	codes := c.ok("POST /api/admin/auth/2fa/recovery-codes", mfa.post("/auth/2fa/recovery-codes",
+		map[string]any{"current_password": storetest.Password, "code": h.totp(secret)}))
+	nonEmpty(t, codes, "recovery_codes")
+	h.nextStep()
+	step1 := h.login(mfa.User.Email, storetest.Password)
+	require.Equal(t, http.StatusAccepted, step1.Code, "%s", step1.Body)
+	var challenge any
+	require.NoError(t, json.Unmarshal(step1.Body, &challenge))
+	assert.Empty(t, doc.check("login 202", challenge, &tsType{kind: "ref", name: "LoginChallenge"}), "%s", step1.Body)
+	c.fail("login 2fa 401", h.login2FA(map[string]any{"challenge_token": "nope", "code": "000000"}), http.StatusUnauthorized)
+	login2 := h.login2FA(map[string]any{"challenge_token": challenge.(map[string]any)["challenge_token"], "code": h.totp(secret)})
+	c.ok("POST /api/admin/auth/login/2fa", login2)
+	require.NotNil(t, sessionFrom(t, login2))
+	h.nextStep()
+	c.ok("POST /api/admin/auth/2fa/disable", mfa.post("/auth/2fa/disable", map[string]any{"current_password": storetest.Password, "code": h.totp(secret)}))
+	c.fail("2fa 400 fields", mfa.post("/auth/2fa/setup", map[string]any{"current_password": "wrong"}), http.StatusBadRequest)
+
 	// ---- admin: invoices, transfers ----
 	c.ok("GET /api/admin/overview", owner.get("/overview"))
 	nonEmpty(t, c.ok("GET /api/admin/invoices", owner.get("/invoices")), "items")
@@ -192,6 +215,10 @@ func TestContractResponses(t *testing.T) {
 	nonEmpty(t, c.ok("GET /api/admin/users", owner.get("/users")), "items")
 	u := c.ok("POST /api/admin/users", owner.post("/users", map[string]any{"email": "contract@example.com", "password": "contract-pass", "role": "viewer"}))
 	c.ok("PATCH /api/admin/users/{id}", owner.patch("/users/"+u["id"].(string), map[string]any{"role": "admin"}))
+	reset := h.newAdmin(domain.RoleAdmin)
+	reset.enable2FA()
+	c.ok("DELETE /api/admin/users/{id}/2fa", owner.del("/users/"+reset.User.ID.String()+"/2fa"))
+	c.fail("2fa reset 409", owner.del("/users/"+reset.User.ID.String()+"/2fa"), http.StatusConflict)
 	c.ok("DELETE /api/admin/users/{id}", owner.del("/users/"+u["id"].(string)))
 	nonEmpty(t, c.ok("GET /api/admin/audit-logs", owner.get("/audit-logs")), "items")
 
@@ -207,6 +234,19 @@ func TestContractResponses(t *testing.T) {
 	require.NoError(t, err)
 	c.ok("POST /api/admin/email/outbox/{id}/retry", owner.post("/email/outbox/"+emailID+"/retry", nil))
 	c.fail("outbox 403 viewer", vc2(h).get("/email/outbox"), http.StatusForbidden)
+
+	// ---- enforcement ----
+	_, err = h.Store.PutSettings(h.Ctx, func() domain.Settings {
+		st, err := h.Store.GetSettings(h.Ctx)
+		require.NoError(t, err)
+		st.Require2FA = true
+		return st
+	}())
+	require.NoError(t, err)
+	setupRequired := h.newAdmin(domain.RoleAdmin)
+	c.fail("403 two_factor_setup_required", setupRequired.get("/invoices"), http.StatusForbidden)
+	me := c.ok("GET /api/admin/auth/me", setupRequired.get("/auth/me"))
+	assert.Equal(t, true, me["two_factor_setup_required"])
 
 	// ---- router errors ----
 	c.fail("404 route", h.do(http.MethodGet, "/api/nope", nil), http.StatusNotFound)

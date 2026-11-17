@@ -20,7 +20,8 @@ export type ApiErrorCode =
   | "unprocessable" // 422
   | "rate_limited" // 429
   | "internal" // 500
-  | "unavailable"; // 503
+  | "unavailable" // 503
+  | "two_factor_setup_required"; // 403, admin API: the account must enable 2FA first
 
 /** Body of every non-2xx response. */
 export interface ApiErrorBody {
@@ -280,6 +281,17 @@ export interface AdminUser {
   active: boolean;
   last_login_at: string | null;
   created_at: string;
+  two_factor_enabled: boolean;
+}
+
+/** `GET /auth/me`: `AdminUser & { two_factor_setup_required: boolean }`. */
+export type AdminMe = AdminUser & { two_factor_setup_required: boolean };
+
+/** The first step of a sign-in for an account with two-factor authentication (`202`). */
+export interface LoginChallenge {
+  two_factor_required: true;
+  challenge_token: string;
+  expires_at: string;
 }
 
 export type EmailMessageStatus = "pending" | "sent" | "failed";
@@ -289,6 +301,11 @@ export type EmailKind =
   | "security.new_login"
   | "security.login_blocked"
   | "security.password_changed"
+  | "security.2fa_enabled"
+  | "security.2fa_disabled"
+  | "security.2fa_reset"
+  | "security.recovery_codes"
+  | "security.recovery_code_used"
   | "security.account_created"
   | "security.role_changed"
   | "security.account_deactivated"
@@ -448,6 +465,8 @@ export interface Settings {
   webhook_timeout_seconds: number;
   checkout_base_url: string;
   walletconnect_project_id: string;
+  /** Every admin must use two-factor authentication. */
+  require_2fa: boolean;
   /** E-mail admins about security events on their own account. */
   security_emails: boolean;
   /** E-mail operational alerts. */
@@ -496,6 +515,46 @@ export interface Overview {
 export interface LoginRequest {
   email: string;
   password: string;
+}
+
+/** `POST /auth/login` answers `AdminUser` (no 2FA) or `202 LoginChallenge`. */
+export type LoginResponse = AdminUser | LoginChallenge;
+
+/** `POST /auth/login/2fa` — exactly one of `code` / `recovery_code`. */
+export interface LoginTwoFactorRequest {
+  challenge_token: string;
+  code?: string;
+  recovery_code?: string;
+}
+
+export interface TwoFactorSetupRequest {
+  current_password: string;
+}
+
+export interface TwoFactorSetupResponse {
+  /** Base32 secret for manual entry. */
+  secret: string;
+  otpauth_uri: string;
+}
+
+export interface TwoFactorEnableRequest {
+  code: string;
+}
+
+export interface TwoFactorDisableRequest {
+  current_password: string;
+  /** A current code or a recovery code. */
+  code: string;
+}
+
+export interface RegenerateRecoveryCodesRequest {
+  current_password: string;
+  code: string;
+}
+
+/** 10 single-use codes, shown only in this response. */
+export interface RecoveryCodesResponse {
+  recovery_codes: string[];
 }
 
 export interface EmailStatus {

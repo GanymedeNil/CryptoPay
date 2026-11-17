@@ -3,6 +3,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { DEMO_RECOVERY_CODES, DEMO_TOTP_SECRET, MOCK_2FA_USER, totp } from "./admin.mjs";
 
 const PORT = 20000 + Math.floor(Math.random() * 20000);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -156,10 +157,111 @@ describe("admin mock", () => {
   });
 });
 
-describe("admin mock: e-mail", () => {
+describe("admin mock: two-factor authentication, e-mail", () => {
   const get = (path, cookie) => fetch(`${BASE}/api/admin${path}`, { headers: { cookie } });
   const send = (method, path, cookie, body) =>
     fetch(`${BASE}/api/admin${path}`, { method, headers: { ...json, cookie }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const step2 = (body) => fetch(`${BASE}/api/admin/auth/login/2fa`, { method: "POST", headers: json, body: JSON.stringify(body) });
+  const challenge = async () => {
+    const { res, cookie } = await login(MOCK_2FA_USER.email, MOCK_2FA_USER.password);
+    expect(res.status).toBe(202);
+    expect(cookie).toBe("");
+    return res.json();
+  };
+  /** A 6-digit code that is certainly not valid right now. */
+  const wrongCode = () => {
+    const ok = new Set([-30_000, 0, 30_000].map((d) => totp(DEMO_TOTP_SECRET, Date.now() + d)));
+    for (let i = 0; ; i++) {
+      const c = String(i).padStart(6, "0");
+      if (!ok.has(c)) return c;
+    }
+  };
+
+  it("signs in in two steps; codes are not replayable and recovery codes work once", async () => {
+    const ch = await challenge();
+    expect(ch).toMatchObject({ two_factor_required: true, challenge_token: expect.any(String) });
+    expect(Date.parse(ch.expires_at) - Date.now()).toBeGreaterThan(4 * 60_000);
+
+    expect((await step2({ challenge_token: ch.challenge_token })).status).toBe(400);
+    expect((await step2({ challenge_token: ch.challenge_token, code: "123456", recovery_code: "x" })).status).toBe(400);
+    const wrong = await step2({ challenge_token: ch.challenge_token, code: wrongCode() });
+    expect(wrong.status).toBe(401);
+    expect((await wrong.json()).error.code).toBe("unauthorized");
+
+    const code = totp(DEMO_TOTP_SECRET);
+    const ok = await step2({ challenge_token: ch.challenge_token, code });
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get("set-cookie")).toMatch(/cp_session=.+HttpOnly/);
+    expect(await ok.json()).toMatchObject({ email: MOCK_2FA_USER.email, two_factor_enabled: true });
+    // The challenge is used up; the same code is not accepted twice.
+    expect((await step2({ challenge_token: ch.challenge_token, code })).status).toBe(401);
+    const again = await challenge();
+    expect((await step2({ challenge_token: again.challenge_token, code })).status).toBe(401);
+
+    const rc = await step2({ challenge_token: again.challenge_token, recovery_code: ` ${DEMO_RECOVERY_CODES[0].toUpperCase()} ` });
+    expect(rc.status).toBe(200);
+    const third = await challenge();
+    expect((await step2({ challenge_token: third.challenge_token, recovery_code: DEMO_RECOVERY_CODES[0] })).status).toBe(401);
+  });
+
+  it("invalidates a challenge after 5 wrong codes", async () => {
+    const ch = await challenge();
+    for (let i = 0; i < 5; i++) expect((await step2({ challenge_token: ch.challenge_token, code: wrongCode() })).status).toBe(401);
+    expect((await step2({ challenge_token: ch.challenge_token, code: totp(DEMO_TOTP_SECRET, Date.now() + 30_000) })).status).toBe(401);
+    // A fresh challenge works (and resets the per-account failure count).
+    const fresh = await challenge();
+    expect((await step2({ challenge_token: fresh.challenge_token, recovery_code: DEMO_RECOVERY_CODES[1] })).status).toBe(200);
+  });
+
+  it("sets up 2FA, enforces require_2fa and lets an owner reset it", async () => {
+    const owner = await login("owner@cryptopay.test", "owner-pass-123");
+    const email = `enforce-${Date.now()}@cryptopay.test`;
+    const created = await (await send("POST", "/users", owner.cookie, { email, password: "enforce-pass-1", role: "admin" })).json();
+    const user = await login(email, "enforce-pass-1");
+    expect(user.res.status).toBe(200);
+
+    // Only an admin with 2FA can require it.
+    const settings = await (await get("/settings", owner.cookie)).json();
+    expect(settings).toMatchObject({ require_2fa: false, security_emails: true, email_locale: "zh" });
+    expect((await send("PUT", "/settings", owner.cookie, { ...settings, require_2fa: true })).status).toBe(409);
+    const bad = await send("PUT", "/settings", owner.cookie, { ...settings, alert_recipients: ["nope"] });
+    expect((await bad.json()).error.fields.alert_recipients).toBeTruthy();
+    const mfaCh = await challenge();
+    const mfa = await step2({ challenge_token: mfaCh.challenge_token, recovery_code: DEMO_RECOVERY_CODES[2] });
+    const mfaCookie = (mfa.headers.get("set-cookie") ?? "").split(";")[0];
+    expect((await send("PUT", "/settings", mfaCookie, { ...settings, require_2fa: true })).status).toBe(200);
+    expect((await send("POST", "/auth/2fa/disable", mfaCookie, { current_password: MOCK_2FA_USER.password, code: totp(DEMO_TOTP_SECRET) })).status).toBe(409);
+
+    // Without 2FA only the setup flow is reachable.
+    const me = await (await get("/auth/me", user.cookie)).json();
+    expect(me).toMatchObject({ two_factor_enabled: false, two_factor_setup_required: true });
+    const blocked = await get("/invoices", user.cookie);
+    expect(blocked.status).toBe(403);
+    expect((await blocked.json()).error.code).toBe("two_factor_setup_required");
+
+    const wrongPw = await send("POST", "/auth/2fa/setup", user.cookie, { current_password: "nope" });
+    expect(wrongPw.status).toBe(400);
+    expect((await wrongPw.json()).error.fields).toHaveProperty("current_password");
+    const setup = await (await send("POST", "/auth/2fa/setup", user.cookie, { current_password: "enforce-pass-1" })).json();
+    expect(setup.otpauth_uri).toMatch(/^otpauth:\/\/totp\/CryptoPay%3A.+\?secret=[A-Z2-7]+&issuer=CryptoPay&algorithm=SHA1&digits=6&period=30$/);
+    const wrongEnable = await send("POST", "/auth/2fa/enable", user.cookie, { code: "abc" });
+    expect((await wrongEnable.json()).error.fields).toHaveProperty("code");
+    const enabled = await (await send("POST", "/auth/2fa/enable", user.cookie, { code: totp(setup.secret) })).json();
+    expect(enabled.recovery_codes).toHaveLength(10);
+    expect(enabled.recovery_codes[0]).toMatch(/^[0-9a-z]{5}-[0-9a-z]{5}$/);
+    expect((await get("/invoices", user.cookie)).status).toBe(200);
+    // The owner (no 2FA) is locked out too until require_2fa is off again.
+    expect((await get("/users", owner.cookie)).status).toBe(403);
+    expect((await send("PUT", "/settings", mfaCookie, { ...settings, require_2fa: false })).status).toBe(200);
+    const users = await (await get("/users", owner.cookie)).json();
+    expect(users.items.find((u) => u.id === created.id).two_factor_enabled).toBe(true);
+
+    // Owner reset: not yourself; the user is signed out everywhere.
+    expect((await send("DELETE", `/users/${users.items.find((u) => u.email === "owner@cryptopay.test").id}/2fa`, owner.cookie)).status).toBe(409);
+    expect((await send("DELETE", `/users/${created.id}/2fa`, owner.cookie)).status).toBe(204);
+    expect((await get("/auth/me", user.cookie)).status).toBe(401);
+    expect((await send("DELETE", `/users/${created.id}/2fa`, owner.cookie)).status).toBe(409);
+  });
 
   it("reports the e-mail status, sends test mails and keeps an outbox", async () => {
     const { cookie } = await login("admin@cryptopay.test", "admin-pass-123");
@@ -188,12 +290,24 @@ describe("admin mock: e-mail", () => {
     expect(retried.status).toBe("pending");
     const sent = all.items.find((m) => m.status === "sent");
     expect((await send("POST", `/email/outbox/${sent.id}/retry`, cookie)).status).toBe(409);
-    // Security events are mailed to the affected admin.
-    expect(all.items.some((m) => m.kind === "security.new_login" && m.to === "owner@cryptopay.test")).toBe(true);
+    // A security event queues a mail to the affected admin.
+    expect(all.items.some((m) => m.kind === "security.recovery_code_used" && m.to === MOCK_2FA_USER.email)).toBe(true);
 
     const viewer = await login("viewer@cryptopay.test", "viewer-pass-123");
     expect((await get("/email/status", viewer.cookie)).status).toBe(200);
     expect((await get("/email/outbox", viewer.cookie)).status).toBe(403);
     expect((await send("POST", "/email/test", viewer.cookie, {})).status).toBe(403);
+  });
+
+  it("throttles repeated wrong codes per account (429)", async () => {
+    let status = 0;
+    for (let i = 0; i < 4 && status !== 429; i++) {
+      const ch = await challenge();
+      for (let j = 0; j < 5; j++) {
+        status = (await step2({ challenge_token: ch.challenge_token, code: wrongCode() })).status;
+        if (status === 429) break;
+      }
+    }
+    expect(status).toBe(429);
   });
 });

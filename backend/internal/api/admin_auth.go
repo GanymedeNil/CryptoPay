@@ -15,14 +15,28 @@ import (
 
 const maxEmailLen = 254
 
+const (
+	// ChallengeTTL is how long the second sign-in step may take.
+	ChallengeTTL = 5 * time.Minute
+	// MaxChallengeAttempts wrong codes delete a challenge.
+	MaxChallengeAttempts = 5
+)
+
 // Sign-in methods recorded in the auth.login audit detail.
 const (
-	methodPassword = "password"
+	methodPassword     = "password"
+	methodTOTP         = "totp"
+	methodRecoveryCode = "recovery_code"
 )
+
+// errSecondStep is the one answer to every failed second sign-in step:
+// unknown, expired or used-up challenge, wrong code.
+var errSecondStep = errUnauthorized("the verification code is wrong or the sign-in has expired")
 
 // login checks e-mail and password. It spends the same time whether the
 // account exists or not (VerifyDummy) and throttles repeated failures per
-// (client IP, e-mail).
+// (client IP, e-mail). An account with two-factor authentication gets a
+// challenge (202) instead of a session: POST /auth/login/2fa completes it.
 func (a *API) login(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var body struct {
@@ -84,6 +98,19 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if user.TwoFactorEnabled() {
+		token, hash := auth.NewSessionToken()
+		ch, err := a.store.CreateLoginChallenge(ctx, domain.LoginChallenge{
+			UserID: user.ID, TokenHash: hash, IP: clientIPFrom(ctx), UserAgent: userAgent(r), ExpiresAt: a.now().Add(ChallengeTTL),
+		})
+		if err != nil {
+			a.fail(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, loginChallengeJSON{TwoFactorRequired: true, ChallengeToken: token, ExpiresAt: ch.ExpiresAt.UTC()})
+		return
+	}
+
 	var token string
 	var sess domain.AdminSession
 	err = a.inTx(ctx, func(tx *store.Store) error {
@@ -96,6 +123,12 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.signedIn(ctx, w, user, token, sess)
+}
+
+type loginChallengeJSON struct {
+	TwoFactorRequired bool      `json:"two_factor_required"`
+	ChallengeToken    string    `json:"challenge_token"`
+	ExpiresAt         time.Time `json:"expires_at"`
 }
 
 // startSession records a completed sign-in of user on tx: a new session,
@@ -157,6 +190,157 @@ func (a *API) loginBlocked(r *http.Request, user domain.AdminUser) {
 	a.notifySecurity(ctx, a.store, user, notify.Event{Kind: notify.KindLoginBlocked, IP: clientIPFrom(ctx), UserAgent: userAgent(r)})
 }
 
+// loginTwoFactor is the second sign-in step: the challenge token of step
+// one plus a TOTP code or a recovery code.
+func (a *API) loginTwoFactor(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var body struct {
+		ChallengeToken string  `json:"challenge_token"`
+		Code           *string `json:"code"`
+		RecoveryCode   *string `json:"recovery_code"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	f := fields{}
+	tok := strings.TrimSpace(body.ChallengeToken)
+	if tok == "" {
+		f.add("challenge_token", "is required")
+	} else if len(tok) > 256 {
+		f.add("challenge_token", "is invalid")
+	}
+	code, recovery := strings.TrimSpace(deref(body.Code)), strings.TrimSpace(deref(body.RecoveryCode))
+	switch {
+	case code == "" && recovery == "":
+		f.add("code", "a code or a recovery code is required")
+	case code != "" && recovery != "":
+		f.add("code", "send either code or recovery_code, not both")
+	case len(code) > 64 || len(recovery) > 64:
+		f.add("code", "is too long")
+	}
+	if err := f.err(); err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	now := a.now()
+	hash := auth.HashToken(tok)
+	pre, err := a.store.GetLoginChallenge(ctx, hash, now)
+	if errors.Is(err, store.ErrNotFound) {
+		a.log.WarnContext(ctx, "admin second sign-in step failed", "request_id", requestIDFrom(ctx), "ip", clientIPFrom(ctx), "reason", "unknown or expired challenge")
+		a.fail(w, r, errSecondStep)
+		return
+	}
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	throttleKey := pre.UserID.String()
+	if blocked, wait := a.twoFactorFailures.blocked(throttleKey); blocked {
+		a.log.WarnContext(ctx, "two-factor check throttled", "request_id", requestIDFrom(ctx), "ip", clientIPFrom(ctx), "admin_id", pre.UserID)
+		a.rateLimited(w, r, wait)
+		return
+	}
+
+	var (
+		ok        bool
+		gone      bool
+		user      domain.AdminUser
+		token     string
+		sess      domain.AdminSession
+		remaining = -1
+	)
+	err = a.inTx(ctx, func(tx *store.Store) error {
+		ok, gone, remaining = false, false, -1
+		ch, err := tx.GetLoginChallengeForUpdate(ctx, hash, now)
+		if errors.Is(err, store.ErrNotFound) {
+			gone = true // used up or consumed concurrently
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if user, err = tx.GetAdminUser(ctx, ch.UserID); err != nil {
+			return err
+		}
+		if !user.Active || !user.TwoFactorEnabled() {
+			gone = true
+			return tx.DeleteLoginChallenge(ctx, ch.ID)
+		}
+		totp, err := tx.GetAdminTOTPForUpdate(ctx, user.ID) // serialises code checks of this user
+		if err != nil {
+			return err
+		}
+		method := methodTOTP
+		if code != "" {
+			if step, valid := auth.VerifyTOTP(totp.Secret, code, now, totp.LastStep); valid {
+				if err := tx.AdvanceTOTPStep(ctx, user.ID, step); err != nil {
+					return err
+				}
+				ok = true
+			}
+		} else if h := auth.HashRecoveryCode(user.ID.String(), recovery); h != "" {
+			method = methodRecoveryCode
+			n, err := tx.UseRecoveryCode(ctx, user.ID, h)
+			switch {
+			case err == nil:
+				ok, remaining = true, n
+			case !errors.Is(err, store.ErrNotFound):
+				return err
+			}
+		}
+		if !ok {
+			n, err := tx.CountChallengeFailure(ctx, ch.ID)
+			if err != nil {
+				return err
+			}
+			if n >= MaxChallengeAttempts {
+				gone = true
+				return tx.DeleteLoginChallenge(ctx, ch.ID)
+			}
+			return nil
+		}
+		if err := tx.DeleteLoginChallenge(ctx, ch.ID); err != nil {
+			return err
+		}
+		if token, sess, err = a.startSession(ctx, tx, &user, method, r); err != nil {
+			return err
+		}
+		if remaining >= 0 {
+			a.notifySecurity(ctx, tx, user, notify.Event{Kind: notify.KindRecoveryCodeUsed, UserAgent: userAgent(r), Remaining: remaining})
+		}
+		return nil
+	})
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	if !ok {
+		reason := "wrong code"
+		if gone {
+			reason = "wrong code, challenge used up (or account changed)"
+		}
+		a.log.WarnContext(ctx, "admin second sign-in step failed", "request_id", requestIDFrom(ctx), "ip", clientIPFrom(ctx),
+			"admin_id", pre.UserID, "reason", reason)
+		if a.twoFactorFailures.fail(throttleKey) {
+			if u, err := a.store.GetAdminUser(ctx, pre.UserID); err == nil {
+				a.loginBlocked(r, u)
+			}
+		}
+		a.fail(w, r, errSecondStep)
+		return
+	}
+	a.twoFactorFailures.reset(throttleKey)
+	a.signedIn(ctx, w, user, token, sess)
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 // logout deletes the session (if any) and clears the cookie. It always
 // answers 204, also without a valid session.
 func (a *API) logout(w http.ResponseWriter, r *http.Request) {
@@ -184,9 +368,23 @@ func (a *API) logout(w http.ResponseWriter, r *http.Request) {
 	noContent(w)
 }
 
+type meJSON struct {
+	adminUserJSON
+	TwoFactorSetupRequired bool `json:"two_factor_setup_required"`
+}
+
 func (a *API) me(w http.ResponseWriter, r *http.Request) {
 	ad, _ := adminFrom(r.Context())
-	writeJSON(w, http.StatusOK, newAdminUserJSON(ad.User))
+	out := meJSON{adminUserJSON: newAdminUserJSON(ad.User)}
+	if !ad.User.TwoFactorEnabled() {
+		required, err := a.twoFactorRequired(r.Context())
+		if err != nil {
+			a.fail(w, r, err)
+			return
+		}
+		out.TwoFactorSetupRequired = required
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // changePassword changes the caller's own password (any role) and signs out
@@ -228,6 +426,9 @@ func (a *API) changePassword(w http.ResponseWriter, r *http.Request) {
 		}
 		n, err := tx.DeleteUserSessions(ctx, ad.User.ID, ad.Session.ID)
 		if err != nil {
+			return err
+		}
+		if _, err := tx.DeleteUserLoginChallenges(ctx, ad.User.ID); err != nil {
 			return err
 		}
 		if err := a.audit(ctx, tx, nil, auditEntry{Action: "auth.password_change", TargetType: "admin_user",

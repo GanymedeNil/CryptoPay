@@ -26,7 +26,7 @@ func TestSettingsDefaultsAndRoundTrip(t *testing.T) {
 		InvoiceTTLSeconds: 900, GracePeriodSeconds: 3600, UnderpayToleranceBps: 0, StablecoinPeg: false,
 		RateMarkupBps: 150, WebhookMaxAttempts: 3, WebhookTimeoutSeconds: 5,
 		CheckoutBaseURL: "https://pay.example.com", WalletConnectID: "wc-123",
-		SecurityEmails: false, AlertEmails: true,
+		Require2FA: true, SecurityEmails: false, AlertEmails: true,
 		AlertRecipients: []string{"ops@example.com", "oncall@example.com"}, EmailLocale: domain.LocaleEN,
 	}
 	put, err := s.PutSettings(ctx, want)

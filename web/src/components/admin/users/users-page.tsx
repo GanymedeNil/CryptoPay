@@ -1,7 +1,7 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { KeyRoundIcon, LockIcon, MoreHorizontalIcon, PlusIcon, PowerIcon, TrashIcon, UsersIcon, WandSparklesIcon } from "lucide-react";
+import { KeyRoundIcon, LockIcon, MoreHorizontalIcon, PlusIcon, PowerIcon, ShieldOffIcon, TrashIcon, UsersIcon, WandSparklesIcon } from "lucide-react";
 import { useId, useState } from "react";
 import { Controller, useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
@@ -41,7 +41,7 @@ import { DataTable, type Column } from "../data-table";
 import { describedBy, FormError, FormField } from "../form-field";
 import { PageHeader } from "../page-header";
 import { EmptyState } from "../states";
-import { ActiveBadge, RoleBadge } from "../status-badge";
+import { ActiveBadge, RoleBadge, StatusBadge } from "../status-badge";
 import { RelativeTime } from "../time";
 
 /** 16 random characters from an unambiguous alphabet (crypto RNG). */
@@ -80,6 +80,7 @@ function OwnerUsersPage() {
   const [resetting, setResetting] = useState<AdminUser | null>(null);
   const [deactivating, setDeactivating] = useState<AdminUser | null>(null);
   const [deleting, setDeleting] = useState<AdminUser | null>(null);
+  const [resetting2fa, setResetting2fa] = useState<AdminUser | null>(null);
 
   const update = useAdminMutation({
     mutationFn: ({ id, body }: { id: string; body: UpdateUserRequest }) => adminApi.updateUser(id, body),
@@ -89,6 +90,11 @@ function OwnerUsersPage() {
     // Toast with the specific "last owner" wording instead of the generic one.
     toastError: false,
     onError: (e) => toast.error(userErrorMessage(t, e)),
+  });
+  const reset2fa = useAdminMutation({
+    mutationFn: (u: AdminUser) => adminApi.resetUserTwoFactor(u.id),
+    invalidate: [adminKeys.users],
+    successMessage: t("admin.users.resetTwoFactorDone"),
   });
   const remove = useAdminMutation({
     mutationFn: (u: AdminUser) => adminApi.deleteUser(u.id),
@@ -131,6 +137,15 @@ function OwnerUsersPage() {
         ),
     },
     { id: "status", header: t("admin.users.columns.status"), cell: (u) => <ActiveBadge active={u.active} /> },
+    {
+      id: "2fa",
+      header: t("admin.users.columns.twoFactor"),
+      cell: (u) => (
+        <StatusBadge tone={u.two_factor_enabled ? "success" : "muted"}>
+          {u.two_factor_enabled ? t("admin.users.twoFactorOn") : t("admin.users.twoFactorOff")}
+        </StatusBadge>
+      ),
+    },
     { id: "login", header: t("admin.users.columns.lastLogin"), cell: (u) => <RelativeTime iso={u.last_login_at} fallback={t("admin.common.never")} /> },
     { id: "created", header: t("admin.users.columns.created"), cell: (u) => <RelativeTime iso={u.created_at} className="text-muted-foreground" /> },
     {
@@ -152,6 +167,12 @@ function OwnerUsersPage() {
                   <KeyRoundIcon aria-hidden />
                   {t("admin.users.resetPassword")}
                 </DropdownMenuItem>
+                {u.two_factor_enabled && (
+                  <DropdownMenuItem onSelect={() => setResetting2fa(u)}>
+                    <ShieldOffIcon aria-hidden />
+                    {t("admin.users.resetTwoFactor")}
+                  </DropdownMenuItem>
+                )}
                 {u.active ? (
                   <DropdownMenuItem onSelect={() => setDeactivating(u)}>
                     <PowerIcon aria-hidden />
@@ -220,6 +241,15 @@ function OwnerUsersPage() {
         confirmLabel={t("admin.users.deactivate")}
         destructive
         onConfirm={() => deactivating && update.mutateAsync({ id: deactivating.id, body: { active: false } })}
+      />
+      <ConfirmDialog
+        open={resetting2fa !== null}
+        onOpenChange={(o) => !o && setResetting2fa(null)}
+        title={t("admin.users.resetTwoFactorTitle", { email: resetting2fa?.email ?? "" })}
+        description={t("admin.users.resetTwoFactorBody")}
+        confirmLabel={t("admin.users.resetTwoFactorConfirm")}
+        destructive
+        onConfirm={() => resetting2fa && reset2fa.mutateAsync(resetting2fa)}
       />
       <ConfirmDialog
         open={deleting !== null}

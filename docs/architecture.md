@@ -30,7 +30,7 @@ USDC; BTC, LTC, ETH and TRX are the most used native coins.
 
 ```
 backend/                     Go module "cryptopay"
-  cmd/gateway/               main: serve | migrate | seed | create-admin
+  cmd/gateway/               main: serve | migrate | create-admin | reset-2fa | seed-dev | healthcheck
   internal/domain/           shared business types (no deps)            [done]
   internal/chain/            chain.Client interface                      [done]
   internal/address/          address validation + canonical forms        [done]
@@ -68,9 +68,10 @@ docker-compose.test.yml      runs every test suite in containers
   `(merchant_id, merchant_order_id)`.
 * **State changes are transactional**: crediting a transfer, moving the invoice
   status and enqueueing the webhook happen in one DB transaction.
-* **Secrets at rest are encrypted** (RPC URLs with API keys, webhook secrets)
-  with AES-256-GCM keyed from `APP_SECRET`. API keys and session tokens are
-  stored only as SHA-256 hashes.
+* **Secrets at rest are encrypted** (RPC URLs with API keys, webhook secrets,
+  admin TOTP secrets) with AES-256-GCM keyed from `APP_SECRET`. API keys,
+  session tokens, sign-in challenge tokens and recovery codes are stored only
+  as SHA-256 hashes.
 * Logging uses `log/slog`. No global state; dependencies are passed in.
   Time is injected (`func() time.Time`) where logic depends on it.
 * Tests: unit tests use `httptest` fakes for RPC/HTTP. Tests that need
@@ -210,6 +211,38 @@ X-CryptoPay-Signature: hex(HMAC-SHA256(secret, timestamp + "." + body))
 
 ## Admin security
 
+**Two-factor authentication.** TOTP per RFC 6238 (HMAC-SHA1, 6 digits,
+30 s steps, the previous/current/next step accepted), implemented in
+`internal/auth` with the standard library. The 160-bit base32 secret is
+encrypted in `admin_users.totp_secret_enc`; a secret without
+`totp_enabled_at` is *pending* (set up, not yet confirmed with a code).
+`totp_last_step` makes every code single-use: a code is accepted only for a
+time step newer than the last accepted one, and the update is a conditional
+`UPDATE … WHERE totp_last_step < $step` under the user row lock, so two
+concurrent requests cannot both use one code. Ten recovery codes
+(`xxxxx-xxxxx`, Crockford base32, 50 bits each) are stored as SHA-256
+hashes bound to the user id and are consumed on use.
+
+**Sign-in.** `POST /auth/login` verifies the password exactly as before
+(same timing and per-IP+e-mail throttle). For an account with two-factor
+authentication it creates an `admin_login_challenges` row (token stored as a
+hash, 5 minutes, at most 5 wrong codes) and answers `202` without a cookie;
+`POST /auth/login/2fa` checks the code (or consumes a recovery code) under
+the challenge and user row locks, deletes the challenge and only then
+creates the session. All failures look the same (`401`); wrong codes are
+also counted per account across IPs and challenges (`429` after 10 within
+15 minutes). Deactivating a user, a password change or a reset deletes the
+user's pending challenges.
+
+**Enforcement.** With the setting `require_2fa` on, a user without two-factor
+authentication is limited to `/auth/me`, `/auth/logout`, `/auth/password`,
+`/auth/2fa/setup` and `/auth/2fa/enable` (`403 two_factor_setup_required`
+elsewhere, a middleware after the session check); the console then shows
+only the setup flow. Only an admin who has two-factor authentication can
+turn the setting on, and nobody can turn their own off while it is on. An
+owner can reset another user's two-factor authentication; when no owner
+can sign in, `gateway reset-2fa --email` does the same from the server.
+
 **E-mail.** `internal/notify` decides what is mailed; messages go into the
 `email_outbox` table and `internal/mailer.Dispatcher` delivers them like the
 webhook dispatcher (claim with `FOR UPDATE SKIP LOCKED` and a lease, so
@@ -224,8 +257,10 @@ only over TLS and never logs the password.
   report — a rolled back change mails nothing: sign-in from an IP the
   account never used before (judged from earlier `auth.login` audit entries
   and sessions; never on the account's first sign-in), sign-in blocked by
-  the failure throttle (one per account per hour), password changed,
-  account created, role changed, deactivated, reactivated.
+  the failure throttle (one per account per hour), password changed, two-
+  factor authentication enabled / disabled / reset, recovery codes
+  regenerated or used (with the number left), account created, role
+  changed, deactivated, reactivated.
 * *Operational alerts* (`alert.*`, setting `alert_emails`, recipients
   `alert_recipients` or every active owner): a webhook event that reached
   `failed`, an unmatched transfer, an invoice that became `underpaid`, a

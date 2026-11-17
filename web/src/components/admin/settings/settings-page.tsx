@@ -1,6 +1,8 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
+import { ShieldAlertIcon } from "lucide-react";
+import Link from "next/link";
 import { useId, useState } from "react";
 import { Controller, useForm, useWatch } from "react-hook-form";
 import { Button } from "@/components/ui/button";
@@ -20,9 +22,10 @@ import {
 } from "@/lib/admin/settings-form";
 import { formatDuration, joinDuration, type DurationUnit } from "@/lib/format/units";
 import { adminApi } from "@/lib/api/admin";
+import { isApiError } from "@/lib/api/client";
 import type { EmailLocale, Settings } from "@/lib/api/types";
 import { useLocale, useT } from "@/lib/i18n";
-import { useCanWrite } from "../auth";
+import { useAuth } from "../auth";
 import { describedBy, FormError, FormField } from "../form-field";
 import { PageHeader, Section } from "../page-header";
 import { ErrorState } from "../states";
@@ -54,7 +57,7 @@ const FORM_FIELDS = Object.values(SETTINGS_FIELD_MAP);
 export function SettingsForm({ settings }: { settings: Settings }) {
   const t = useT();
   const { locale } = useLocale();
-  const canWrite = useCanWrite();
+  const { canWrite, user } = useAuth();
   const base = useId();
   const id = (f: string) => `${base}-${f}`;
   const [formError, setFormError] = useState<string | null>(null);
@@ -71,6 +74,12 @@ export function SettingsForm({ settings }: { settings: Settings }) {
     successMessage: t("admin.settings.saved"),
     toastError: false,
     onError: (e) => {
+      // Turning require_2fa on without own two-factor authentication: say it on the switch.
+      if (isApiError(e) && e.isConflict && form.getValues("require_2fa") && !settings.require_2fa) {
+        form.setError("require_2fa", { type: "server", message: t("admin.settings.fields.require2faConflict", { message: e.message }) });
+        setFormError(describeError(t, e));
+        return;
+      }
       const rest = applyFieldErrors(e, form.setError, FORM_FIELDS, SETTINGS_FIELD_MAP);
       if (rest === null) setFormError(describeError(t, e));
       else if (Object.keys(rest).length) setFormError(Object.entries(rest).map(([k, v]) => `${k}: ${v}`).join("; "));
@@ -152,7 +161,7 @@ export function SettingsForm({ settings }: { settings: Settings }) {
   };
 
   const toggleField = (
-    field: "security_emails" | "alert_emails",
+    field: "require_2fa" | "security_emails" | "alert_emails",
     label: string,
     hint: string,
     extra?: React.ReactNode,
@@ -294,6 +303,23 @@ export function SettingsForm({ settings }: { settings: Settings }) {
               />
             </FormField>
           </div>
+        </Section>
+
+        <Section title={t("admin.settings.sections.security")} description={t("admin.settings.sections.securityDescription")}>
+          {toggleField(
+            "require_2fa",
+            t("admin.settings.fields.require2fa"),
+            t("admin.settings.fields.require2faHint"),
+            !user.two_factor_enabled && (
+              <p className="flex flex-wrap items-start gap-x-1.5 gap-y-0.5 text-xs text-warning">
+                <ShieldAlertIcon className="mt-px size-3.5 shrink-0" aria-hidden />
+                <span>{t("admin.settings.fields.require2faPrecondition")}</span>
+                <Link href="/admin/security" className="font-medium underline underline-offset-2">
+                  {t("admin.settings.fields.require2faSetupLink")}
+                </Link>
+              </p>
+            ),
+          )}
         </Section>
 
         <Section title={t("admin.settings.sections.email")} description={t("admin.settings.sections.emailDescription")}>

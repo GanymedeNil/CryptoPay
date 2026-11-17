@@ -86,7 +86,7 @@ src/
     checkout/                pure checkout logic: state machine, payment amounts/URIs, asset grouping
     admin/                   admin data layer (TanStack Query keys/hooks), errors, URL state, roles,
                              settings-form conversions, timeline, explorer links, wallet-input checks,
-                             e-mail kinds
+                             two-factor helpers (codes, recovery-code file, e-mail kinds)
     wallets/                 wallet adapters per family (evm, tron, solana, bitcoin), deep links, detection
     explorer.ts, clipboard.ts, device.ts, env.ts, browser.ts, utils.ts (cn)
   test/                      setup, renderWithProviders, fixtures, admin.tsx (renderAdmin + admin fixtures)
@@ -204,7 +204,7 @@ title (`src/lib/admin/metadata.ts`).
 
 | Route | |
 |---|---|
-| `/admin/login` | email + password, 401 / 429 / network messages, `?next=` (console paths only) and `?reason=expired\|signedOut` |
+| `/admin/login` | email + password, 401 / 429 / network messages, `?next=` (console paths only) and `?reason=expired\|signedOut`; for accounts with two-step verification a second step after the `202 LoginChallenge`: 6-digit code (numeric keypad, `autocomplete="one-time-code"`, paste-friendly, submits itself at 6 digits) or a recovery code, back to step one, and — since every failure is the same 401 — "wrong code (n left)" vs "expired / used up, sign in again" decided from `expires_at` and a local count of the 5 allowed wrong codes; 429 explained |
 | `/admin` | overview: 7/30/90-day range (`?days=`), KPIs, needs-attention (unmatched transfers, failed webhooks → filtered lists), daily volume + invoices chart (recharts via shadcn `chart`), by asset, by status, chain-monitoring strip |
 | `/admin/invoices` | filters in the URL (`status`, `merchant_id`, `q`, `from`, `to`, `page`, `page_size`), create-invoice dialog → checkout link with copy / open |
 | `/admin/invoices/[id]` | summary, timeline (rebuilt from quotes / transfers / webhook events), quotes, transfers, webhook events (payload + retry), cancel, mark paid (note required); refreshes every 10 s while open |
@@ -214,10 +214,17 @@ title (`src/lib/admin/metadata.ts`).
 | `/admin/chains` | grouped mainnet / testnet: enable (optimistic), payable + reasons (payable = the default wallet; merchant-wallet count and "merchants with their own wallet can still be paid"), scanner state, RPC editor (masked list, replace / reset, per-URL test), default-RPC warning on mainnets, scan parameters, default receiving wallet (same family only) |
 | `/admin/assets` | grouped by chain: enable (optimistic), edit precision / order / rate key / name, add custom token |
 | `/admin/wallets` | list with usage (default wallet of chains · merchant wallet of merchants, linked), 3-step wizard (type → key + `POST /wallets/preview` + "I checked" → name) with the "never paste a private key" notice, local secret and duplicate-key detection (a 409 `fields.xpub` / `fields.address` sends the wizard back to the key), rename, delete (409 explained: quotes, or the merchants using it) |
-| `/admin/settings` | every `Settings` field in operator units (minutes / hours, %), validation, sticky save bar; "Email notifications" (`GET /email/status` — host / sender, or how to configure `SMTP_*` —, security / alert email switches, alert recipients editor (max 10, validated, Enter adds), email language, "send test email" with the SMTP outcome) |
+| `/admin/settings` | every `Settings` field in operator units (minutes / hours, %), validation, sticky save bar; "Security" (`require_2fa`, with the "enable it for yourself first" precondition and the 409 shown on the switch) and "Email notifications" (`GET /email/status` — host / sender, or how to configure `SMTP_*` —, security / alert email switches, alert recipients editor (max 10, validated, Enter adds), email language, "send test email" with the SMTP outcome) |
+| `/admin/security` | own account, every role (user menu + sidebar): two-step verification (status; setup wizard confirm password → QR of the `otpauth_uri` + key in groups of 4 → code → 10 recovery codes shown once with copy / download `.txt` / "I stored them"; turn off with password + code or recovery code, new recovery codes with password + authenticator code only; field errors from `fields.current_password` / `fields.code`), change password |
 | `/admin/emails` | owner / admin only (hidden for viewers): the e-mail outbox, `status` / `kind` filters in the URL (kinds with readable labels), expandable rows that load the text body, retry for failed messages, "not configured" notice |
-| `/admin/users` | owner only (hidden from the nav otherwise): create (random password generator), role, (de)activate, reset password, delete, "last owner" errors |
+| `/admin/users` | owner only (hidden from the nav otherwise): create (random password generator), role, (de)activate, reset password, two-step badge + "reset two-step verification" (`DELETE /users/{id}/2fa`, confirmed), delete, "last owner" errors |
 | `/admin/audit-logs` | `action`, `actor` filters, expandable detail JSON, links to the target |
+
+**Two-step verification.** `AuthGate` shows only the setup flow
+(`ForcedTwoFactorSetup`: the wizard plus sign out) while `GET /auth/me` says
+`two_factor_setup_required`, or as soon as any request answers 403
+`two_factor_setup_required` (`TWO_FACTOR_REQUIRED_EVENT`, then `/auth/me` is
+reloaded); the console comes back once the recovery codes were confirmed.
 
 **Roles.** `useAuth()` gives `{ user, canWrite, isOwner }`. Mutating controls
 use `GatedButton` / `RoleTooltip`: disabled for viewers with a tooltip saying
@@ -250,15 +257,25 @@ status badges (invoice / quote / transfer / webhook / merchant / role),
 
 ### Mock accounts
 
-`pnpm mock` seeds three accounts (also printed at startup):
+`pnpm mock` seeds these accounts (also printed at startup):
 
 | Role | Email | Password |
 |---|---|---|
 | owner | `owner@cryptopay.test` | `owner-pass-123` |
 | admin | `admin@cryptopay.test` | `admin-pass-123` |
 | viewer | `viewer@cryptopay.test` | `viewer-pass-123` |
+| admin, two-step verification on | `mfa@cryptopay.test` | `mfa-pass-123` |
 
 (`former.ops@cryptopay.test` is a deactivated admin.)
+
+`mfa@cryptopay.test` signs in in two steps. Its TOTP secret is the fixed
+demo key `JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP` (`DEMO_TOTP_SECRET` in
+`mock/admin.mjs`): add it to any authenticator app, or read the current code
+from the startup banner. Its recovery codes are `demo0-aaaa1` …
+`demo0-kkkk0` (`DEMO_RECOVERY_CODES`, each works once until the mock is
+reset). Turning on `require_2fa` (only possible as `mfa@`, the one account
+with 2FA) sends every other account into the setup flow; enabling 2FA there
+with a real authenticator app works because the mock implements RFC 6238.
 
 ## Checkout (`/pay/[id]`)
 
@@ -356,7 +373,11 @@ wallet), custom token without a rate, audit history. Assets disabled in the
 console, or without a receiving wallet for the invoice's merchant (its own,
 else the chain's default), disappear from the mock checkout. RPC tests fail for
 hosts containing `bad` / `invalid` / `down`; webhook deliveries fail for URLs
-containing `broken` / `down`. E-mail: `GET /email/status` reports
+containing `broken` / `down`. Two-step verification is real TOTP (±1 step,
+no code accepted twice) with challenges (5 minutes, 5 wrong codes),
+single-use recovery codes, a per-account wrong-code throttle (429),
+`require_2fa` enforcement (403 `two_factor_setup_required` outside the
+allowed endpoints) and owner reset. E-mail: `GET /email/status` reports
 Mailpit, the outbox is seeded with security notices and alerts (some
 failed), new security events queue mails while the toggles are on, queued
 mails "send" after ~1.5 s, and addresses containing `bounce` / `fail` are

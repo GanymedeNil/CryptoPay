@@ -1,7 +1,7 @@
 "use client";
 
 import { useQueryClient } from "@tanstack/react-query";
-import { EyeIcon, KeyRoundIcon, LogOutIcon } from "lucide-react";
+import { EyeIcon, KeyRoundIcon, LogOutIcon, ShieldCheckIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { createContext, Fragment, useContext, useEffect, useMemo, useState } from "react";
@@ -254,6 +254,12 @@ function UserMenu() {
             <RoleBadge role={user.role} />
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
+          <DropdownMenuItem asChild>
+            <Link href="/admin/security">
+              <ShieldCheckIcon aria-hidden />
+              {t("admin.shell.security")}
+            </Link>
+          </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => setPwOpen(true)}>
             <KeyRoundIcon aria-hidden />
             {t("admin.shell.changePassword")}

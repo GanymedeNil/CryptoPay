@@ -19,12 +19,13 @@ import (
 
 // tsType is a parsed TypeScript type expression.
 type tsType struct {
-	kind   string    // "union", "intersection", "array", "object", "ref", "prim", "lit", "record", "page"
+	kind   string    // "union", "intersection", "array", "object", "ref", "prim", "lit", "boollit", "record", "page"
 	alts   []*tsType // union, intersection
 	elem   *tsType   // array, page
 	fields []tsField // object
 	name   string    // ref name, prim name
 	lit    string    // string literal value
+	blit   bool      // boolean literal value
 }
 
 type tsField struct {
@@ -237,6 +238,8 @@ func parseTSType(s string) (*tsType, error) {
 		return x, nil
 	}
 	switch {
+	case s == "true" || s == "false":
+		return &tsType{kind: "boollit", blit: s == "true"}, nil
 	case strings.HasSuffix(s, "[]"):
 		e, err := parseTSType(s[:len(s)-2])
 		return &tsType{kind: "array", elem: e}, err
@@ -447,6 +450,11 @@ func (d *contractDoc) check(path string, v any, t *tsType) []string {
 			return []string{fmt.Sprintf("%s: want %q, got %v", path, t.lit, v)}
 		}
 		return nil
+	case "boollit":
+		if b, ok := v.(bool); !ok || b != t.blit {
+			return []string{fmt.Sprintf("%s: want %v, got %v", path, t.blit, v)}
+		}
+		return nil
 	case "intersection":
 		// Every part must be an object type; the value has exactly the
 		// union of their members.
@@ -551,12 +559,13 @@ func TestContractDocParses(t *testing.T) {
 	doc := loadContract(t)
 	for _, name := range []string{"Invoice", "Quote", "Transfer", "AssetInfo", "CreateInvoice", "CheckoutView",
 		"CheckoutAsset", "AdminUser", "Merchant", "ApiKey", "Wallet", "MerchantWallet", "Chain", "Asset", "InvoiceDetail",
-		"AdminInvoice", "WebhookEvent", "AuditLog", "Settings", "Overview", "EmailMessage"} {
+		"AdminInvoice", "WebhookEvent", "AuditLog", "Settings", "Overview", "LoginChallenge", "EmailMessage"} {
 		_, ok := doc.fieldsOf(name)
 		require.True(t, ok, "interface %s", name)
 	}
 	require.Contains(t, doc.aliases, "InvoiceStatus")
-	require.Len(t, doc.routes, 5+2+46, "every endpoint row is parsed")
+	require.Len(t, doc.routes, 5+2+52, "every endpoint row is parsed")
+	require.Equal(t, "intersection", doc.routes["GET /api/admin/auth/me"].Type.kind)
 	require.Equal(t, "intersection", doc.routes["GET /api/admin/email/outbox/{id}"].Type.kind)
 	r := doc.routes["POST /api/admin/merchants"]
 	require.Equal(t, 201, r.Status)
@@ -580,7 +589,7 @@ func TestContractDocParses(t *testing.T) {
 	errs := doc.check("$", bad, &tsType{kind: "ref", name: "AssetInfo"})
 	require.Len(t, errs, 4, "%v", errs)
 
-	// Intersections.
+	// Intersections and boolean literals.
 	me, err := parseTSType("AssetInfo & { extra: boolean }")
 	require.NoError(t, err)
 	withExtra := map[string]any{"extra": true}
@@ -589,4 +598,9 @@ func TestContractDocParses(t *testing.T) {
 	}
 	require.Empty(t, doc.check("$", withExtra, me))
 	require.Len(t, doc.check("$", asset, me), 1, "missing intersection member")
+	ch := &tsType{kind: "ref", name: "LoginChallenge"}
+	good := map[string]any{"two_factor_required": true, "challenge_token": "t", "expires_at": "2026-01-01T00:00:00Z"}
+	require.Empty(t, doc.check("$", good, ch))
+	good["two_factor_required"] = false
+	require.Len(t, doc.check("$", good, ch), 1, "true literal")
 }

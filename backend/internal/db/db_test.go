@@ -264,8 +264,8 @@ func TestMigrationRefusesCrossFamilyXpub(t *testing.T) {
 }
 
 // TestMigrationAdminSecurity: 00004 applies to a database that already has
-// admin users and sessions, which keep working; the e-mail outbox has the
-// expected constraints.
+// admin users and sessions; they keep working without two-factor
+// authentication, and the new tables have the expected constraints.
 func TestMigrationAdminSecurity(t *testing.T) {
 	ctx := context.Background()
 	pool, err := Open(ctx, testSchemaURL(t))
@@ -273,10 +273,14 @@ func TestMigrationAdminSecurity(t *testing.T) {
 	defer pool.Close()
 	require.NoError(t, migrateTo(t, pool, 3))
 
-	const owner = "00000000-0000-0000-0000-0000000000a1"
+	const (
+		owner  = "00000000-0000-0000-0000-0000000000a1"
+		viewer = "00000000-0000-0000-0000-0000000000a2"
+	)
 	_, err = pool.Exec(ctx, `
 		INSERT INTO admin_users (id, email, password_hash, role, active, last_login_at) VALUES
-			('`+owner+`', 'owner@example.com', '$2a$10$hash', 'owner', true, now());
+			('`+owner+`', 'owner@example.com', '$2a$10$hash', 'owner', true, now()),
+			('`+viewer+`', 'viewer@example.com', '$2a$10$hash', 'viewer', false, NULL);
 		INSERT INTO admin_sessions (id, user_id, token_hash, ip, user_agent, expires_at) VALUES
 			(gen_random_uuid(), '`+owner+`', 'hash-1', '192.0.2.1', 'ua', now() + interval '1 day');
 		INSERT INTO audit_logs (actor_email, action, target_type, target_id, ip) VALUES
@@ -285,9 +289,32 @@ func TestMigrationAdminSecurity(t *testing.T) {
 
 	require.NoError(t, migrateTo(t, pool, 4))
 
+	var secret string
+	var enabled *time.Time
+	var step int64
+	require.NoError(t, pool.QueryRow(ctx, `SELECT totp_secret_enc, totp_enabled_at, totp_last_step FROM admin_users WHERE id = $1`, owner).
+		Scan(&secret, &enabled, &step))
+	assert.Empty(t, secret)
+	assert.Nil(t, enabled, "existing users have no two-factor authentication")
+	assert.Zero(t, step)
 	var sessions int
 	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM admin_sessions`).Scan(&sessions))
 	assert.Equal(t, 1, sessions, "sessions survive")
+
+	// Recovery codes and challenges belong to a user and go with it.
+	_, err = pool.Exec(ctx, `
+		INSERT INTO admin_recovery_codes (id, user_id, code_hash) VALUES (gen_random_uuid(), '`+owner+`', 'h1');
+		INSERT INTO admin_login_challenges (id, user_id, token_hash, expires_at) VALUES (gen_random_uuid(), '`+viewer+`', 't1', now());`)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `INSERT INTO admin_recovery_codes (id, user_id, code_hash) VALUES (gen_random_uuid(), '`+viewer+`', 'h1')`)
+	require.ErrorContains(t, err, "admin_recovery_codes_code_hash_key", "code hashes are unique")
+	_, err = pool.Exec(ctx, `INSERT INTO admin_login_challenges (id, user_id, token_hash, expires_at) VALUES (gen_random_uuid(), '`+owner+`', 't1', now())`)
+	require.ErrorContains(t, err, "admin_login_challenges_token_hash_key")
+	_, err = pool.Exec(ctx, `DELETE FROM admin_users WHERE id = '`+viewer+`'`)
+	require.NoError(t, err)
+	var challenges int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM admin_login_challenges`).Scan(&challenges))
+	assert.Zero(t, challenges, "ON DELETE CASCADE")
 
 	// The outbox accepts only the three statuses.
 	_, err = pool.Exec(ctx, `INSERT INTO email_outbox (id, kind, to_address, subject, body_text, status) VALUES (gen_random_uuid(), 'k', 'a@b', 's', 'b', 'bounced')`)
@@ -302,8 +329,8 @@ func TestMigrationAdminSecurity(t *testing.T) {
 	_, err = provider.DownTo(ctx, 3)
 	require.NoError(t, err)
 	var exists bool
-	require.NoError(t, pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema()
-		AND table_name = 'email_outbox')`).Scan(&exists))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+		AND table_name = 'admin_users' AND column_name = 'totp_secret_enc')`).Scan(&exists))
 	assert.False(t, exists)
 	_, err = provider.UpTo(ctx, 4)
 	require.NoError(t, err)

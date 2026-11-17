@@ -3,6 +3,7 @@
 //	gateway [serve] [--no-migrate] [--addr :8080]   run the HTTP API, chain scanners and webhook dispatcher
 //	gateway migrate                                  apply database migrations and exit
 //	gateway create-admin --email E --password P [--role owner|admin|viewer]
+//	gateway reset-2fa --email E                      remove an admin's two-factor authentication (break glass)
 //	gateway seed-dev [--merchant-name N] [--webhook-url U]   development data (refused in production)
 //	gateway healthcheck [--url U]                    probe /healthz (container HEALTHCHECK; exit 0 when healthy)
 //	gateway version
@@ -37,6 +38,8 @@ commands:
   serve         run the HTTP API, chain scanners, webhook dispatcher (default)
   migrate       apply database migrations and exit
   create-admin  create an admin user (--email, --password, --role)
+  reset-2fa     remove an admin's two-factor authentication and sign them
+                out everywhere (--email; break glass for a lost device)
   seed-dev      create development data: demo merchant + API key, test-only
                 testnet wallets (refused when APP_ENV=production)
   healthcheck   probe the local /healthz endpoint (for container health checks)
@@ -85,6 +88,8 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout 
 		return runMigrate(ctx, args, getenv, stdout)
 	case "create-admin":
 		return runCreateAdmin(ctx, args, getenv, stdout)
+	case "reset-2fa":
+		return runReset2FA(ctx, args, getenv, stdout)
 	case "seed-dev":
 		return runSeedDev(ctx, args, getenv, stdout)
 	case "healthcheck":

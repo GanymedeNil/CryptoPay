@@ -275,14 +275,41 @@ type AdminUser struct {
 	Role         Role
 	Active       bool
 	LastLoginAt  *time.Time
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// TOTPEnabledAt is when two-factor authentication was turned on (nil =
+	// off). The secret itself is only read through the store's dedicated
+	// TOTP methods, never with the user.
+	TOTPEnabledAt *time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
+
+// TwoFactorEnabled reports whether the user signs in with a TOTP code.
+func (u AdminUser) TwoFactorEnabled() bool { return u.TOTPEnabledAt != nil }
 
 type AdminSession struct {
 	ID        uuid.UUID
 	UserID    uuid.UUID
 	TokenHash string // hex sha256 of the cookie token
+	IP        string
+	UserAgent string
+	ExpiresAt time.Time
+	CreatedAt time.Time
+}
+
+// AdminTOTP is a user's two-factor state (decrypted secret).
+type AdminTOTP struct {
+	Secret    string     // base32; "" = none
+	EnabledAt *time.Time // nil with a Secret = pending (set up, not confirmed)
+	LastStep  int64      // last accepted time step (replay protection)
+}
+
+// LoginChallenge is the pending second step of a sign-in with two-factor
+// authentication: the password was accepted, the code is still missing.
+type LoginChallenge struct {
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	TokenHash string // hex sha256 of the challenge token
+	Attempts  int    // wrong codes so far
 	IP        string
 	UserAgent string
 	ExpiresAt time.Time
@@ -374,6 +401,7 @@ type Settings struct {
 	CheckoutBaseURL       string `json:"checkout_base_url"` // public origin of the checkout UI, e.g. https://pay.example.com
 	WalletConnectID       string `json:"walletconnect_project_id"`
 
+	Require2FA      bool     `json:"require_2fa"`      // every admin must use two-factor authentication
 	SecurityEmails  bool     `json:"security_emails"`  // e-mail admins about security events on their account
 	AlertEmails     bool     `json:"alert_emails"`     // e-mail operational alerts
 	AlertRecipients []string `json:"alert_recipients"` // [] = every active owner

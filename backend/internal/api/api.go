@@ -20,8 +20,12 @@
 //     request must carry `X-Requested-With: cryptopay` (CSRF guard).
 //   - Every admin mutation writes an audit log entry whose detail never
 //     contains secrets, API keys, passwords or full RPC URLs.
-//   - Security-relevant account changes are e-mailed to the affected admin
-//     (package notify).
+//   - Admins may use TOTP two-factor authentication (sign-in in two steps,
+//     challenge tokens and recovery codes stored as hashes, secrets
+//     encrypted at rest); while the require_2fa setting is on, users
+//     without it can only reach the endpoints needed to set it up
+//     (403 two_factor_setup_required). Security-relevant account changes
+//     are e-mailed to the affected admin (package notify).
 package api
 
 import (
@@ -109,13 +113,16 @@ type API struct {
 	notifier *notify.Service
 	mailer   mailer.Sender
 
-	limits         Limits
-	merchantLimit  *keyedLimiter // per API key
-	checkoutLimit  *keyedLimiter // per IP, GET /api/checkout/{id}
-	quoteLimit     *keyedLimiter // per IP, POST /api/checkout/{id}/quote
-	loginLimit     *keyedLimiter // per IP, POST /api/admin/auth/login
-	loginFailures  *failureThrottle
-	emailTestLimit *keyedLimiter // per user, POST /email/test
+	limits        Limits
+	merchantLimit *keyedLimiter // per API key
+	checkoutLimit *keyedLimiter // per IP, GET /api/checkout/{id}
+	quoteLimit    *keyedLimiter // per IP, POST /api/checkout/{id}/quote
+	loginLimit    *keyedLimiter // per IP, POST /api/admin/auth/login and /auth/login/2fa
+	loginFailures *failureThrottle
+	// twoFactorFailures counts wrong two-factor codes (and wrong passwords
+	// on the two-factor endpoints) per user, across IPs and challenges.
+	twoFactorFailures *failureThrottle
+	emailTestLimit    *keyedLimiter // per user, POST /email/test
 }
 
 // New returns the gateway's HTTP handler.
@@ -147,6 +154,7 @@ func newAPI(d Deps) *API {
 	a.quoteLimit = newKeyedLimiter(lim.CheckoutQuote, a.now)
 	a.loginLimit = newKeyedLimiter(lim.LoginIP, a.now)
 	a.loginFailures = newFailureThrottle(lim.LoginFailures, lim.LoginWindow, a.now)
+	a.twoFactorFailures = newFailureThrottle(lim.TwoFactorFailures, lim.LoginWindow, a.now)
 	a.emailTestLimit = newKeyedLimiter(lim.EmailTest, a.now)
 	return a
 }

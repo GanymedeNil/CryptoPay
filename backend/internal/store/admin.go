@@ -13,12 +13,12 @@ import (
 
 // ---- admin users ----
 
-const adminUserCols = `u.id, u.email, u.password_hash, u.role, u.active, u.last_login_at, u.created_at, u.updated_at`
+const adminUserCols = `u.id, u.email, u.password_hash, u.role, u.active, u.last_login_at, u.totp_enabled_at, u.created_at, u.updated_at`
 
 func scanAdminUser(row pgx.Row) (domain.AdminUser, error) {
 	var u domain.AdminUser
 	var role string
-	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &role, &u.Active, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt)
+	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &role, &u.Active, &u.LastLoginAt, &u.TOTPEnabledAt, &u.CreatedAt, &u.UpdatedAt)
 	u.Role = domain.Role(role)
 	return u, err
 }
@@ -239,7 +239,7 @@ func (s *Store) GetSessionByTokenHash(ctx context.Context, tokenHash string, now
 	var u domain.AdminUser
 	var role string
 	err := row.Scan(&x.ID, &x.UserID, &x.TokenHash, &x.IP, &x.UserAgent, &x.ExpiresAt, &x.CreatedAt,
-		&u.ID, &u.Email, &u.PasswordHash, &role, &u.Active, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt)
+		&u.ID, &u.Email, &u.PasswordHash, &role, &u.Active, &u.LastLoginAt, &u.TOTPEnabledAt, &u.CreatedAt, &u.UpdatedAt)
 	u.Role = domain.Role(role)
 	if err != nil {
 		return domain.AdminSession{}, domain.AdminUser{}, wrap("get session", err)

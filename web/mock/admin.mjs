@@ -5,10 +5,12 @@
 // Behaviour mirrors the contract: cookie session (`cp_session`, HttpOnly),
 // CSRF header on every mutation, roles (viewer → 403 on mutations, users →
 // owner only), validation errors with `fields`, 404 / 409 / 422 / 429,
-// paging, filters, an audit entry for every mutation and an e-mail
-// outbox.
+// paging, filters, and an audit entry for every mutation. Two-factor
+// authentication is real RFC 6238 TOTP (the seeded `mfa@` account uses the
+// fixed DEMO_TOTP_SECRET printed at startup), with recovery codes, sign-in
+// challenges, `require_2fa` enforcement and an e-mail outbox.
 
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
 export const DEFAULT_MERCHANT_ID = "6f1d2c3b-4a59-4e6f-8a7b-1c2d3e4f5a60";
 
@@ -19,10 +21,107 @@ export const MOCK_USERS = [
   { email: "viewer@cryptopay.test", password: "viewer-pass-123", role: "viewer" },
 ];
 
+/** Seeded account with two-factor authentication on (also documented in web/README.md). */
+export const MOCK_2FA_USER = { email: "mfa@cryptopay.test", password: "mfa-pass-123", role: "admin" };
+
+/**
+ * Fixed TOTP secret of MOCK_2FA_USER: add it to any authenticator app
+ * (time based, SHA-1, 6 digits, 30 s), or compute codes with `totp()`.
+ */
+export const DEMO_TOTP_SECRET = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP";
+
+/** Recovery codes of MOCK_2FA_USER after a reset (each works once). */
+export const DEMO_RECOVERY_CODES = [
+  "demo0-aaaa1", "demo0-bbbb2", "demo0-cccc3", "demo0-dddd4", "demo0-eeee5",
+  "demo0-ffff6", "demo0-gggg7", "demo0-hhhh8", "demo0-jjjj9", "demo0-kkkk0",
+];
+
 const DELAY_MS = Number(process.env.MOCK_ADMIN_DELAY_MS ?? 120);
+const CHALLENGE_TTL_MS = 5 * 60 * 1000;
+const CHALLENGE_MAX_ATTEMPTS = 5;
+const TWO_FA_MAX_FAILURES = 10;
+const ISSUER = "CryptoPay";
 const SESSION_MAX_AGE = 7 * 24 * 3600;
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 5;
+
+// ---------------------------------------------------------------------------
+// RFC 6238 TOTP (HMAC-SHA1, 6 digits, 30 s step, ±1 step) and recovery codes
+// ---------------------------------------------------------------------------
+
+const B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+export function base32Encode(buf) {
+  let bits = 0;
+  let value = 0;
+  let out = "";
+  for (const byte of buf) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      out += B32[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) out += B32[(value << (5 - bits)) & 31];
+  return out;
+}
+
+export function base32Decode(s) {
+  const clean = String(s).toUpperCase().replace(/[\s=-]+/g, "");
+  let bits = 0;
+  let value = 0;
+  const out = [];
+  for (const ch of clean) {
+    const v = B32.indexOf(ch);
+    if (v < 0) throw new Error("invalid base32");
+    value = (value << 5) | v;
+    bits += 5;
+    if (bits >= 8) {
+      out.push((value >>> (bits - 8)) & 255);
+      bits -= 8;
+    }
+  }
+  return Buffer.from(out);
+}
+
+function hotp(key, counter) {
+  const msg = Buffer.alloc(8);
+  msg.writeBigUInt64BE(BigInt(counter));
+  const mac = createHmac("sha1", key).update(msg).digest();
+  const off = mac[mac.length - 1] & 15;
+  const bin = ((mac[off] & 0x7f) << 24) | (mac[off + 1] << 16) | (mac[off + 2] << 8) | mac[off + 3];
+  return String(bin % 1_000_000).padStart(6, "0");
+}
+
+/** The current 6-digit code of a base32 secret (tests and the startup banner use it). */
+export function totp(secret, atMs = Date.now()) {
+  return hotp(base32Decode(secret), Math.floor(atMs / 30_000));
+}
+
+/** Matching time step of `code` within ±1 step, newer than `lastStep`; null when wrong or replayed. */
+function verifyTotp(secret, code, lastStep, atMs = Date.now()) {
+  if (!/^\d{6}$/.test(String(code))) return null;
+  const key = base32Decode(secret);
+  const step = Math.floor(atMs / 30_000);
+  for (const s of [step - 1, step, step + 1]) {
+    if (s <= lastStep) continue;
+    if (timingSafeEqual(Buffer.from(hotp(key, s)), Buffer.from(String(code)))) return s;
+  }
+  return null;
+}
+
+const RC_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
+const sha256 = (s) => createHash("sha256").update(s).digest("hex");
+const normRecovery = (s) => String(s).trim().toLowerCase().replace(/\s+/g, "");
+
+function newRecoveryCodes() {
+  return Array.from({ length: 10 }, () => {
+    const b = randomBytes(10);
+    const chars = Array.from(b, (x) => RC_ALPHABET[x & 31]).join("");
+    return `${chars.slice(0, 5)}-${chars.slice(5)}`;
+  });
+}
 
 const iso = (ms) => new Date(ms).toISOString();
 const now = () => Date.now();
@@ -165,6 +264,7 @@ export function createAdminMock(ctx) {
     active: u.active,
     last_login_at: u.last_login_at,
     created_at: u.created_at,
+    two_factor_enabled: Boolean(u.two_factor_enabled),
   });
 
   const publicEmail = (m) => ({
@@ -487,7 +587,9 @@ export function createAdminMock(ctx) {
     S = {
       users: [],
       sessions: new Map(),
+      challenges: new Map(),
       loginFailures: new Map(),
+      twoFactorFailures: new Map(),
       outbox: [],
       email:
         process.env.MOCK_SMTP === "off"
@@ -512,6 +614,7 @@ export function createAdminMock(ctx) {
         webhook_timeout_seconds: 10,
         checkout_base_url: CHECKOUT_BASE,
         walletconnect_project_id: "",
+        require_2fa: false,
         security_emails: true,
         alert_emails: true,
         alert_recipients: ["ops@cryptopay.test"],
@@ -540,6 +643,20 @@ export function createAdminMock(ctx) {
       active: false,
       last_login_at: iso(t0 - 45 * DAY),
       created_at: iso(t0 - 100 * DAY),
+    });
+    // Two-factor authentication on, with the fixed demo secret and recovery codes.
+    S.users.push({
+      id: uuidFrom(rng),
+      email: MOCK_2FA_USER.email,
+      password: MOCK_2FA_USER.password,
+      role: MOCK_2FA_USER.role,
+      active: true,
+      last_login_at: iso(t0 - 3 * DAY),
+      created_at: iso(t0 - 40 * DAY),
+      two_factor_enabled: true,
+      totpSecret: DEMO_TOTP_SECRET,
+      lastStep: 0,
+      recoveryCodes: DEMO_RECOVERY_CODES.map((c) => ({ hash: sha256(c), used: false })),
     });
 
     // merchants
@@ -912,6 +1029,7 @@ export function createAdminMock(ctx) {
     S.auditSeq = S.audit.length + 1;
 
     // e-mail outbox history
+    const mfa = S.users.find((u) => u.email === MOCK_2FA_USER.email);
     const hook = S.webhookEvents.find((e) => e.status === "failed");
     const failedMerchant = S.merchants.find((m) => m.id === hook?.merchant_id) ?? S.merchants[1];
     const outboxSeed = [
@@ -919,6 +1037,8 @@ export function createAdminMock(ctx) {
       ["alert.webhook_failed", "ops@cryptopay.test", { merchant: failedMerchant.name, event: hook?.event_type ?? "invoice.paid" }, 0.9, "sent"],
       ["alert.transfer_unmatched", "ops@cryptopay.test", { chain: "Tron", amount: "12.5 USDT" }, 1.2, "sent"],
       ["alert.invoice_underpaid", "ops@cryptopay.test", { invoice: sorted[3]?.id ?? "" }, 1.6, "failed", "dial tcp: lookup smtp.example.com: no such host"],
+      ["security.2fa_enabled", mfa.email, {}, 2.5, "sent"],
+      ["security.recovery_code_used", mfa.email, { remaining: 9, ip: "198.51.100.7" }, 3.1, "sent"],
       ["alert.scanner_failing", "ops@cryptopay.test", { chain: "BSC", minutes: 14 }, 4.2, "sent"],
       ["security.login_blocked", adminUser.email, { ip: "192.0.2.77" }, 5.5, "sent"],
       ["security.password_changed", adminUser.email, { by: owner.email }, 6, "sent"],
@@ -943,6 +1063,11 @@ export function createAdminMock(ctx) {
     "security.new_login": { zh: "新设备登录了你的账号", en: "New sign-in to your account" },
     "security.login_blocked": { zh: "你的账号登录已被暂时锁定", en: "Sign-in to your account was blocked" },
     "security.password_changed": { zh: "你的密码已修改", en: "Your password was changed" },
+    "security.2fa_enabled": { zh: "已启用两步验证", en: "Two-step verification turned on" },
+    "security.2fa_disabled": { zh: "已停用两步验证", en: "Two-step verification turned off" },
+    "security.2fa_reset": { zh: "你的两步验证已被重置", en: "Your two-step verification was reset" },
+    "security.recovery_codes": { zh: "已生成新的恢复码", en: "New recovery codes generated" },
+    "security.recovery_code_used": { zh: "有人使用恢复码登录了你的账号", en: "A recovery code was used to sign in" },
     "security.account_created": { zh: "已为你创建管理员账号", en: "An admin account was created for you" },
     "security.role_changed": { zh: "你的角色已变更", en: "Your role was changed" },
     "security.account_deactivated": { zh: "你的账号已被停用", en: "Your account was deactivated" },
@@ -961,8 +1086,8 @@ export function createAdminMock(ctx) {
     const facts = Object.entries(vars).map(([k, v]) => `  ${k}: ${v}`);
     const notYou =
       lang === "zh"
-        ? "如果这不是你本人或你的同事的操作，请立即登录管理后台修改密码，并联系所有者。"
-        : "If this wasn't you or a colleague, sign in now, change your password and contact an Owner.";
+        ? "如果这不是你本人或你的同事的操作，请立即登录管理后台修改密码、检查「账户安全」，并联系所有者。"
+        : "If this wasn't you or a colleague, sign in now, change your password, check Account security and contact an Owner.";
     const body = [
       lang === "zh" ? "你好，" : "Hello,",
       "",
@@ -1081,6 +1206,7 @@ export function createAdminMock(ctx) {
         n++;
       }
     }
+    for (const [h, c] of S.challenges) if (c.userId === userId) S.challenges.delete(h);
     return n;
   }
 
@@ -1117,10 +1243,22 @@ export function createAdminMock(ctx) {
     const ua = String(req.headers["user-agent"] || "");
     // -- auth (no session needed for login) --
     if (a === "auth" && b === "login" && !c && method === "POST") return login(body, ip, ua);
+    if (a === "auth" && b === "login" && c === "2fa" && method === "POST") return loginTwoFactor(body, ip, ua);
 
     const cur = currentSession(req);
     if (!cur) throw new HttpError(401, "unauthorized", "not signed in");
     const { user, token } = cur;
+
+    // require_2fa: only the setup flow (and a few account endpoints) until it is done.
+    if (S.settings.require_2fa && !user.two_factor_enabled) {
+      const allowed =
+        a === "auth" &&
+        ((b === "me" && method === "GET") ||
+          (b === "logout" && method === "POST") ||
+          (b === "password" && method === "POST") ||
+          (b === "2fa" && (c === "setup" || c === "enable") && method === "POST"));
+      if (!allowed) throw new HttpError(403, "two_factor_setup_required", "two-factor authentication must be enabled for this account first");
+    }
 
     if (a === "auth") {
       if (b === "logout" && method === "POST") {
@@ -1128,7 +1266,9 @@ export function createAdminMock(ctx) {
         audit(user, "auth.logout", "user", user.id, null, ip);
         return { status: 204, headers: CLEAR_COOKIE };
       }
-      if (b === "me" && method === "GET") return { body: publicUser(user) };
+      if (b === "me" && method === "GET") {
+        return { body: { ...publicUser(user), two_factor_setup_required: Boolean(S.settings.require_2fa && !user.two_factor_enabled) } };
+      }
       if (b === "password" && method === "POST") {
         const fields = {};
         if (typeof body.current_password !== "string" || body.current_password !== user.password) fields.current_password = "is incorrect";
@@ -1140,6 +1280,7 @@ export function createAdminMock(ctx) {
         enqueueMail("security.password_changed", user.email, { by: user.email, ip });
         return { status: 204 };
       }
+      if (b === "2fa") return twoFactorRoute(user, token, ip, method, c, body);
       throw notFound("endpoint");
     }
 
@@ -1168,7 +1309,7 @@ export function createAdminMock(ctx) {
         return settingsRoute(user, ip, method, body);
       case "users":
         if (user.role !== "owner") throw new HttpError(403, "forbidden", "user management is owner-only");
-        return usersRoute(user, ip, method, b, body);
+        return usersRoute(user, ip, method, b, c, body);
       case "email":
         return emailRoute(user, ip, method, url, b, c, d, body);
       case "audit-logs":
@@ -1193,7 +1334,153 @@ export function createAdminMock(ctx) {
       throw new HttpError(401, "unauthorized", "invalid email or password");
     }
     S.loginFailures.delete(key);
+    if (u.two_factor_enabled) {
+      const challenge = randomBytes(32).toString("base64url");
+      const expires = now() + CHALLENGE_TTL_MS;
+      S.challenges.set(sha256(challenge), { userId: u.id, expires, attempts: 0 });
+      return { status: 202, body: { two_factor_required: true, challenge_token: challenge, expires_at: iso(expires) } };
+    }
     return createSession(u, ip, ua);
+  }
+
+  /** `POST /auth/login/2fa`: every failure is the same 401 (docs/api.md). */
+  function loginTwoFactor(body, ip, ua) {
+    const tok = typeof body?.challenge_token === "string" ? body.challenge_token : "";
+    const hasCode = typeof body?.code === "string" && body.code !== "";
+    const hasRc = typeof body?.recovery_code === "string" && body.recovery_code !== "";
+    if (!tok || hasCode === hasRc) {
+      throw bad("send challenge_token and exactly one of code / recovery_code", {
+        ...(tok ? {} : { challenge_token: "required" }),
+        ...(hasCode === hasRc ? { code: "send exactly one of code / recovery_code" } : {}),
+      });
+    }
+    const failed = () => new HttpError(401, "unauthorized", "the verification failed; check the code or sign in again");
+    const h = sha256(tok);
+    const ch = S.challenges.get(h);
+    if (!ch || ch.expires <= now()) {
+      S.challenges.delete(h);
+      throw failed();
+    }
+    const u = S.users.find((x) => x.id === ch.userId);
+    if (!u || !u.active || !u.two_factor_enabled) {
+      S.challenges.delete(h);
+      throw failed();
+    }
+    const fkey = u.id;
+    const fails = (S.twoFactorFailures.get(fkey) ?? []).filter((t) => t > now() - LOGIN_WINDOW_MS);
+    if (fails.length >= TWO_FA_MAX_FAILURES) throw new HttpError(429, "rate_limited", "too many wrong codes; try again later");
+    let usedRecovery = false;
+    if (hasCode) {
+      const step = verifyTotp(u.totpSecret, body.code.trim(), u.lastStep ?? 0);
+      if (step !== null) u.lastStep = step;
+      else return wrongCode();
+    } else {
+      const rc = u.recoveryCodes.find((r) => !r.used && r.hash === sha256(normRecovery(body.recovery_code)));
+      if (!rc) return wrongCode();
+      rc.used = true;
+      usedRecovery = true;
+    }
+    function wrongCode() {
+      ch.attempts += 1;
+      if (ch.attempts >= CHALLENGE_MAX_ATTEMPTS) S.challenges.delete(h);
+      fails.push(now());
+      S.twoFactorFailures.set(fkey, fails);
+      if (fails.length === TWO_FA_MAX_FAILURES) enqueueMail("security.login_blocked", u.email, { ip }, 3600_000);
+      throw failed();
+    }
+    S.challenges.delete(h);
+    S.twoFactorFailures.delete(fkey);
+    const out = createSession(u, ip, ua);
+    if (usedRecovery) {
+      enqueueMail("security.recovery_code_used", u.email, { remaining: u.recoveryCodes.filter((r) => !r.used).length, ip });
+    }
+    return out;
+  }
+
+  // ---- own two-factor authentication ------------------------------------------
+
+  function checkPassword(user, body) {
+    if (typeof body?.current_password !== "string" || body.current_password === "") throw bad("current_password is required", { current_password: "is required" });
+    if (body.current_password !== user.password) throw bad("invalid request", { current_password: "is incorrect" });
+  }
+
+  /** A TOTP code or (allowRecovery) an unused recovery code; consumes it. */
+  function checkCode(user, body, allowRecovery) {
+    const code = String(body?.code ?? "").trim();
+    if (!code) throw bad("code is required", { code: "is required" });
+    if (/^\d{6}$/.test(code)) {
+      const step = verifyTotp(user.totpSecret, code, user.lastStep ?? 0);
+      if (step !== null) {
+        user.lastStep = step;
+        return;
+      }
+    } else if (allowRecovery) {
+      const rc = user.recoveryCodes.find((r) => !r.used && r.hash === sha256(normRecovery(code)));
+      if (rc) {
+        rc.used = true;
+        return;
+      }
+    }
+    throw bad("invalid request", { code: "is incorrect" });
+  }
+
+  function issueRecoveryCodes(user) {
+    const codes = newRecoveryCodes();
+    user.recoveryCodes = codes.map((c) => ({ hash: sha256(c), used: false }));
+    return codes;
+  }
+
+  function twoFactorRoute(user, token, ip, method, action, body) {
+    if (method !== "POST") throw notFound("endpoint");
+    if (action === "setup") {
+      checkPassword(user, body);
+      if (user.two_factor_enabled) throw conflict("two-factor authentication is already enabled");
+      user.pendingSecret = base32Encode(randomBytes(20));
+      const label = encodeURIComponent(`${ISSUER}:${user.email}`);
+      const otpauth = `otpauth://totp/${label}?secret=${user.pendingSecret}&issuer=${ISSUER}&algorithm=SHA1&digits=6&period=30`;
+      audit(user, "auth.2fa_setup", "admin_user", user.id, null, ip);
+      return { body: { secret: user.pendingSecret, otpauth_uri: otpauth } };
+    }
+    if (action === "enable") {
+      if (user.two_factor_enabled) throw conflict("two-factor authentication is already enabled");
+      if (!user.pendingSecret) throw conflict("start the setup first (POST /auth/2fa/setup)");
+      const code = String(body?.code ?? "").trim();
+      if (!code) throw bad("code is required", { code: "is required" });
+      const step = verifyTotp(user.pendingSecret, code, 0);
+      if (step === null) throw bad("invalid request", { code: "is incorrect" });
+      user.totpSecret = user.pendingSecret;
+      user.pendingSecret = null;
+      user.lastStep = step;
+      user.two_factor_enabled = true;
+      const codes = issueRecoveryCodes(user);
+      const n = signOutUser(user.id, token);
+      audit(user, "auth.2fa_enable", "admin_user", user.id, { other_sessions_revoked: n }, ip);
+      enqueueMail("security.2fa_enabled", user.email, { ip });
+      return { body: { recovery_codes: codes } };
+    }
+    if (action === "disable") {
+      if (S.settings.require_2fa) throw conflict("two-factor authentication is required for every admin (setting require_2fa)");
+      checkPassword(user, body);
+      if (!user.two_factor_enabled) throw conflict("two-factor authentication is not enabled");
+      checkCode(user, body, true);
+      user.two_factor_enabled = false;
+      user.totpSecret = null;
+      user.recoveryCodes = [];
+      user.lastStep = 0;
+      audit(user, "auth.2fa_disable", "admin_user", user.id, null, ip);
+      enqueueMail("security.2fa_disabled", user.email, { ip });
+      return { status: 204 };
+    }
+    if (action === "recovery-codes") {
+      checkPassword(user, body);
+      if (!user.two_factor_enabled) throw conflict("two-factor authentication is not enabled");
+      checkCode(user, body, false); // a code from the app only, like the gateway
+      const codes = issueRecoveryCodes(user);
+      audit(user, "auth.recovery_codes", "admin_user", user.id, null, ip);
+      enqueueMail("security.recovery_codes", user.email, { ip });
+      return { body: { recovery_codes: codes } };
+    }
+    throw notFound("endpoint");
   }
 
   // ---- overview ----------------------------------------------------------------
@@ -1889,13 +2176,16 @@ export function createAdminMock(ctx) {
       if (!isInt(s.webhook_timeout_seconds, 1, 120)) f.webhook_timeout_seconds = "must be 1..120";
       if (typeof s.checkout_base_url !== "string" || !isHttpUrl(s.checkout_base_url) || s.checkout_base_url.endsWith("/")) f.checkout_base_url = "must be an http(s) URL without a trailing slash";
       if (typeof s.walletconnect_project_id !== "string" || s.walletconnect_project_id.length > 128) f.walletconnect_project_id = "max 128 characters";
-      for (const k of ["security_emails", "alert_emails"]) if (typeof s[k] !== "boolean") f[k] = "must be a boolean";
+      for (const k of ["require_2fa", "security_emails", "alert_emails"]) if (typeof s[k] !== "boolean") f[k] = "must be a boolean";
       if (!Array.isArray(s.alert_recipients)) f.alert_recipients = "is required ([] when not used)";
       else if (s.alert_recipients.length > 10) f.alert_recipients = "at most 10 addresses";
       else if (s.alert_recipients.some((r) => typeof r !== "string" || !isEmail(r.trim()))) f.alert_recipients = "must be valid e-mail addresses";
       else if (new Set(s.alert_recipients.map((r) => r.trim().toLowerCase())).size !== s.alert_recipients.length) f.alert_recipients = "contains duplicates";
       if (!["zh", "en"].includes(s.email_locale)) f.email_locale = "must be zh or en";
       if (Object.keys(f).length) throw bad("invalid settings", f);
+      if (s.require_2fa && !S.settings.require_2fa && !user.two_factor_enabled) {
+        throw conflict("enable two-factor authentication for your own account before requiring it for everyone");
+      }
       const detail = {};
       for (const k of Object.keys(S.settings)) {
         if (JSON.stringify(s[k]) !== JSON.stringify(S.settings[k])) detail[k] = { from: S.settings[k], to: s[k] };
@@ -1910,6 +2200,7 @@ export function createAdminMock(ctx) {
         webhook_timeout_seconds: s.webhook_timeout_seconds,
         checkout_base_url: s.checkout_base_url,
         walletconnect_project_id: s.walletconnect_project_id,
+        require_2fa: s.require_2fa,
         security_emails: s.security_emails,
         alert_emails: s.alert_emails,
         alert_recipients: s.alert_recipients.map((r) => r.trim()),
@@ -1925,7 +2216,7 @@ export function createAdminMock(ctx) {
 
   const activeOwners = () => S.users.filter((u) => u.role === "owner" && u.active);
 
-  function usersRoute(user, ip, method, id, body) {
+  function usersRoute(user, ip, method, id, sub, body) {
     if (!id && method === "GET") return { body: { items: S.users.map(publicUser) } };
     if (!id && method === "POST") {
       const fields = {};
@@ -1943,6 +2234,20 @@ export function createAdminMock(ctx) {
     }
     const u = S.users.find((x) => x.id === id);
     if (!u) throw notFound("user");
+    if (sub === "2fa" && method === "DELETE") {
+      if (u.id === user.id) throw conflict("use POST /auth/2fa/disable for your own account");
+      if (!u.two_factor_enabled && !u.pendingSecret) throw conflict("this user has no two-factor authentication");
+      u.two_factor_enabled = false;
+      u.totpSecret = null;
+      u.pendingSecret = null;
+      u.recoveryCodes = [];
+      u.lastStep = 0;
+      const n = signOutUser(u.id);
+      audit(user, "user.2fa_reset", "admin_user", u.id, { email: u.email, sessions_revoked: n }, ip);
+      enqueueMail("security.2fa_reset", u.email, { by: user.email });
+      return { status: 204 };
+    }
+    if (sub) throw notFound("endpoint");
     if (method === "PATCH") {
       const fields = {};
       if (body.role !== undefined && !["owner", "admin", "viewer"].includes(body.role)) fields.role = "must be owner, admin or viewer";
@@ -2035,6 +2340,10 @@ export function createAdminMock(ctx) {
   function printCredentials(base) {
     console.log(`\n  Admin console: ${base}/admin  (mock admin API under /api/admin)`);
     for (const u of MOCK_USERS) console.log(`    ${u.role.padEnd(7)} ${u.email.padEnd(24)} ${u.password}`);
+    const m = MOCK_2FA_USER;
+    console.log(`    ${m.role.padEnd(7)} ${m.email.padEnd(24)} ${m.password}   + two-step verification:`);
+    console.log(`            TOTP secret ${DEMO_TOTP_SECRET} (add it to an authenticator app; code now: ${totp(DEMO_TOTP_SECRET)})`);
+    console.log(`            recovery codes: ${DEMO_RECOVERY_CODES.join(" ")}`);
     console.log(`    e-mail: ${S?.email?.configured === false ? "not configured (MOCK_SMTP=off)" : "configured (mailpit), outbox at /admin/emails"}`);
     console.log("");
   }

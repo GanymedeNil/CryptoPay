@@ -14,17 +14,18 @@ import (
 // and AssetInfo come from package view.
 
 type adminUserJSON struct {
-	ID          string     `json:"id"`
-	Email       string     `json:"email"`
-	Role        string     `json:"role"`
-	Active      bool       `json:"active"`
-	LastLoginAt *time.Time `json:"last_login_at"`
-	CreatedAt   time.Time  `json:"created_at"`
+	ID               string     `json:"id"`
+	Email            string     `json:"email"`
+	Role             string     `json:"role"`
+	Active           bool       `json:"active"`
+	LastLoginAt      *time.Time `json:"last_login_at"`
+	CreatedAt        time.Time  `json:"created_at"`
+	TwoFactorEnabled bool       `json:"two_factor_enabled"`
 }
 
 func newAdminUserJSON(u domain.AdminUser) adminUserJSON {
 	return adminUserJSON{ID: u.ID.String(), Email: u.Email, Role: string(u.Role), Active: u.Active,
-		LastLoginAt: utcPtr(u.LastLoginAt), CreatedAt: u.CreatedAt.UTC()}
+		LastLoginAt: utcPtr(u.LastLoginAt), CreatedAt: u.CreatedAt.UTC(), TwoFactorEnabled: u.TwoFactorEnabled()}
 }
 
 type merchantJSON struct {

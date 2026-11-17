@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"cryptopay/internal/db"
 	"cryptopay/internal/domain"
 	"cryptopay/internal/hdwallet"
+	"cryptopay/internal/notify"
 	"cryptopay/internal/secret"
 	"cryptopay/internal/store"
 )
@@ -120,6 +122,70 @@ func runCreateAdmin(ctx context.Context, args []string, getenv func(string) stri
 		return err
 	}
 	fmt.Fprintf(stdout, "created %s %s (id %s)\n", u.Role, u.Email, u.ID)
+	return nil
+}
+
+// runReset2FA is the break-glass reset of an admin's two-factor
+// authentication (lost device and no recovery codes, no other owner who
+// could reset it in the console): it removes the TOTP secret and recovery
+// codes and signs the user out everywhere. Audited; the user is e-mailed
+// when e-mail is configured.
+func runReset2FA(ctx context.Context, args []string, getenv func(string) string, stdout io.Writer) error {
+	fs := newFlagSet("reset-2fa", stdout)
+	email := fs.String("email", "", "e-mail address of the admin user, required")
+	if err := parseFlags(fs, args); err != nil {
+		return err
+	}
+	e := strings.TrimSpace(*email)
+	if e == "" {
+		return usagef("reset-2fa: --email is required")
+	}
+	cfg, err := config.LoadFrom(getenv)
+	if err != nil {
+		return err
+	}
+	st, closeFn, err := openStore(ctx, cfg, stdout)
+	if err != nil {
+		return err
+	}
+	defer closeFn()
+	u, err := st.GetAdminUserByEmail(ctx, e)
+	if errors.Is(err, store.ErrNotFound) {
+		return fmt.Errorf("no admin user with e-mail %s", e)
+	}
+	if err != nil {
+		return err
+	}
+	log := newLogger(stdout, slog.LevelWarn, false)
+	notifier := notify.New(st, cfg.EmailConfigured(), log, time.Now)
+	var reset bool
+	var sessions int64
+	err = st.WithTx(ctx, func(tx *store.Store) error {
+		var err error
+		if reset, sessions, err = tx.ResetAdminTwoFactor(ctx, u.ID); err != nil || !reset {
+			return err
+		}
+		detail, _ := json.Marshal(map[string]any{"email": u.Email, "sessions_revoked": sessions})
+		if _, err := tx.InsertAuditLog(ctx, domain.AuditLog{Action: "user.2fa_reset", TargetType: "admin_user",
+			TargetID: u.ID.String(), ActorEmail: "cli:reset-2fa", Detail: detail}); err != nil {
+			return err
+		}
+		if err := tx.WithTx(ctx, func(sp *store.Store) error {
+			return notifier.Security(ctx, sp, u, notify.Event{Kind: notify.Kind2FAReset, ActorCLI: true})
+		}); err != nil {
+			log.Warn("could not queue the notification e-mail", "error", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if !reset {
+		fmt.Fprintf(stdout, "%s has no two-factor authentication; nothing to reset\n", u.Email)
+		return nil
+	}
+	fmt.Fprintf(stdout, "two-factor authentication of %s was reset; %d session(s) signed out\n", u.Email, sessions)
+	fmt.Fprintln(stdout, "they can sign in with their password now (and must set up two-factor authentication again when it is required)")
 	return nil
 }
 

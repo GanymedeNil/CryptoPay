@@ -351,7 +351,8 @@ func sendOnKick(ctx context.Context, d *mailer.Dispatcher, kick <-chan struct{},
 	}
 }
 
-// cleanupSessions deletes expired admin sessions periodically.
+// cleanupSessions deletes expired admin sessions and sign-in challenges
+// periodically.
 func cleanupSessions(ctx context.Context, st *store.Store, log *slog.Logger) {
 	t := time.NewTicker(sessionCleanupInterval)
 	defer t.Stop()
@@ -360,6 +361,11 @@ func cleanupSessions(ctx context.Context, st *store.Store, log *slog.Logger) {
 			log.Warn("session cleanup failed", "error", err)
 		} else if n > 0 {
 			log.Info("expired admin sessions deleted", "count", n)
+		}
+		if n, err := st.DeleteExpiredLoginChallenges(ctx, time.Now()); err != nil && ctx.Err() == nil {
+			log.Warn("sign-in challenge cleanup failed", "error", err)
+		} else if n > 0 {
+			log.Info("expired sign-in challenges deleted", "count", n)
 		}
 		select {
 		case <-ctx.Done():

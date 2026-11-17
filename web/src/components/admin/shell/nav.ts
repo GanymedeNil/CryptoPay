@@ -7,6 +7,7 @@ import {
   ReceiptTextIcon,
   ScrollTextIcon,
   SettingsIcon,
+  ShieldCheckIcon,
   StoreIcon,
   UsersIcon,
   WalletIcon,
@@ -55,6 +56,7 @@ export const NAV: NavGroup[] = [
   {
     label: "admin.nav.groupAdmin",
     items: [
+      { href: "/admin/security", label: "admin.nav.security", icon: ShieldCheckIcon },
       { href: "/admin/users", label: "admin.nav.users", icon: UsersIcon, ownerOnly: true },
       { href: "/admin/emails", label: "admin.nav.emails", icon: MailIcon, writersOnly: true },
       { href: "/admin/audit-logs", label: "admin.nav.auditLogs", icon: ScrollTextIcon },

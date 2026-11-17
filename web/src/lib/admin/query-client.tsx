@@ -19,8 +19,24 @@ export function notifyUnauthorized(): void {
   if (typeof window !== "undefined") window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
 }
 
+/**
+ * Fired when any admin request comes back 403 `two_factor_setup_required`
+ * (the `require_2fa` setting is on and this account has no two-factor
+ * authentication yet). The authenticated layout switches to the setup flow.
+ */
+export const TWO_FACTOR_REQUIRED_EVENT = "cryptopay:admin-2fa-required";
+
+export function notifyTwoFactorRequired(): void {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(TWO_FACTOR_REQUIRED_EVENT));
+}
+
+export function isTwoFactorSetupRequired(error: unknown): boolean {
+  return isApiError(error) && error.code === "two_factor_setup_required";
+}
+
 function onAnyError(error: unknown) {
   if (isApiError(error) && error.isUnauthorized) notifyUnauthorized();
+  else if (isTwoFactorSetupRequired(error)) notifyTwoFactorRequired();
 }
 
 /** Retry only what can succeed without user action (network, 429, 5xx). */

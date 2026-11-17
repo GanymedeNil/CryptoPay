@@ -34,6 +34,7 @@ export function errorKind(error: unknown): ErrorKind {
 export function describeError(t: TranslateFn, error: unknown): string {
   const kind = errorKind(error);
   const serverMessage = isApiError(error) ? error.message : "";
+  if (isApiError(error) && error.code === "two_factor_setup_required") return t("admin.errors.twoFactorSetupRequired");
   switch (kind) {
     case "network":
       return t("admin.errors.network");

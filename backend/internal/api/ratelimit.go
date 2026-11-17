@@ -27,19 +27,24 @@ type Limits struct {
 	// window has passed.
 	LoginFailures int
 	LoginWindow   time.Duration
+	// TwoFactorFailures wrong two-factor codes for one user within
+	// LoginWindow (from any IP, over any number of challenges) block the
+	// user's two-factor checks (429) until the window has passed.
+	TwoFactorFailures int
 	// EmailTest limits POST /email/test per user.
 	EmailTest Limit
 }
 
 // DefaultLimits are the production rate limits.
 var DefaultLimits = Limits{
-	MerchantKey:   Limit{Rate: 20, Burst: 60},
-	CheckoutGet:   Limit{Rate: 3, Burst: 60},
-	CheckoutQuote: Limit{Rate: rate.Every(6 * time.Second), Burst: 10},
-	LoginIP:       Limit{Rate: rate.Every(3 * time.Second), Burst: 20},
-	LoginFailures: 5,
-	LoginWindow:   15 * time.Minute,
-	EmailTest:     Limit{Rate: rate.Every(10 * time.Second), Burst: 5},
+	MerchantKey:       Limit{Rate: 20, Burst: 60},
+	CheckoutGet:       Limit{Rate: 3, Burst: 60},
+	CheckoutQuote:     Limit{Rate: rate.Every(6 * time.Second), Burst: 10},
+	LoginIP:           Limit{Rate: rate.Every(3 * time.Second), Burst: 20},
+	LoginFailures:     5,
+	LoginWindow:       15 * time.Minute,
+	TwoFactorFailures: 10,
+	EmailTest:         Limit{Rate: rate.Every(10 * time.Second), Burst: 5},
 }
 
 func (l Limits) withDefaults() Limits {
@@ -55,6 +60,9 @@ func (l Limits) withDefaults() Limits {
 	l.CheckoutQuote = pick(l.CheckoutQuote, d.CheckoutQuote)
 	l.LoginIP = pick(l.LoginIP, d.LoginIP)
 	l.EmailTest = pick(l.EmailTest, d.EmailTest)
+	if l.TwoFactorFailures <= 0 {
+		l.TwoFactorFailures = d.TwoFactorFailures
+	}
 	if l.LoginFailures <= 0 {
 		l.LoginFailures = d.LoginFailures
 	}

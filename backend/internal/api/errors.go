@@ -21,6 +21,10 @@ const (
 	CodeRateLimited    = "rate_limited"    // 429
 	CodeInternal       = "internal"        // 500
 	CodeUnavailable    = "unavailable"     // 503
+
+	// CodeTwoFactorSetupRequired (403): require_2fa is on and the caller has
+	// not set up two-factor authentication yet.
+	CodeTwoFactorSetupRequired = "two_factor_setup_required"
 )
 
 // Error is an error with its HTTP representation. Handlers return it (or a

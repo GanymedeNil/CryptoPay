@@ -2,17 +2,18 @@
 
 import { useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import { createContext, useContext, useEffect, useMemo, useRef } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { adminKeys, useMe } from "@/lib/admin/queries";
-import { UNAUTHORIZED_EVENT } from "@/lib/admin/query-client";
+import { TWO_FACTOR_REQUIRED_EVENT, UNAUTHORIZED_EVENT } from "@/lib/admin/query-client";
 import { canWrite, isOwner } from "@/lib/admin/roles";
 import { isApiError } from "@/lib/api/client";
-import type { AdminUser } from "@/lib/api/types";
+import type { AdminMe, AdminUser } from "@/lib/api/types";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { ErrorState } from "./states";
+import { ForcedTwoFactorSetup } from "./two-factor/forced-setup";
 
 export const LOGIN_PATH = "/admin/login";
 
@@ -65,6 +66,9 @@ export function useCanWrite(): boolean {
 /**
  * Loads `GET /auth/me` and renders the console only for a signed-in user.
  * 401 (now or from any later request) → `/admin/login?next=<this page>`.
+ * While two-factor setup is required (`two_factor_setup_required` from
+ * `/auth/me`, or a 403 `two_factor_setup_required` from any request) only the
+ * setup flow is shown, until it is completed.
  */
 export function AuthGate({ children, fallback }: { children: React.ReactNode; fallback: React.ReactNode }) {
   const me = useMe();
@@ -85,6 +89,18 @@ export function AuthGate({ children, fallback }: { children: React.ReactNode; fa
     return () => window.removeEventListener(UNAUTHORIZED_EVENT, go);
   }, [router, qc]);
 
+  // A 403 two_factor_setup_required from any request: show the setup flow
+  // until /auth/me (refetched now) says otherwise.
+  const [requiredAt, setRequiredAt] = useState<number | null>(null);
+  useEffect(() => {
+    const onRequired = () => {
+      setRequiredAt(Date.now());
+      void qc.invalidateQueries({ queryKey: adminKeys.me });
+    };
+    window.addEventListener(TWO_FACTOR_REQUIRED_EVENT, onRequired);
+    return () => window.removeEventListener(TWO_FACTOR_REQUIRED_EVENT, onRequired);
+  }, [qc]);
+
   const unauthorized = isApiError(me.error) && me.error.isUnauthorized;
   useEffect(() => {
     if (unauthorized && !redirected.current) {
@@ -93,7 +109,24 @@ export function AuthGate({ children, fallback }: { children: React.ReactNode; fa
     }
   }, [unauthorized, router, me.data]);
 
-  if (me.data && !unauthorized) return <AuthProvider user={me.data}>{children}</AuthProvider>;
+  if (me.data && !unauthorized) {
+    const forced = requiredAt !== null && me.dataUpdatedAt <= requiredAt;
+    if (me.data.two_factor_setup_required || forced) {
+      return (
+        <ForcedTwoFactorSetup
+          email={me.data.email}
+          signOutUrl={loginUrl("/admin", "signedOut")}
+          onDone={() => {
+            setRequiredAt(null);
+            qc.setQueryData<AdminMe>(adminKeys.me, (u) => u && { ...u, two_factor_enabled: true, two_factor_setup_required: false });
+            // Everything that was refused meanwhile can load now.
+            void qc.invalidateQueries({ queryKey: adminKeys.all });
+          }}
+        />
+      );
+    }
+    return <AuthProvider user={me.data}>{children}</AuthProvider>;
+  }
   if (me.error && !unauthorized) {
     return (
       <div className="mx-auto flex min-h-dvh max-w-md items-center px-4">

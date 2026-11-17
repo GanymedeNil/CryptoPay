@@ -324,13 +324,49 @@ func mustUUID(t *testing.T, s any) uuid.UUID {
 
 var errProbe = errors.New("dial tcp: lookup https://rpc.example/v2/SECRETKEY: no such host")
 
-// ---- sign-in and e-mail helpers ----
+// ---- two-factor helpers ----
+
+// totp returns the code of secret at the harness clock's current step. The
+// clock is fixed: call h.nextStep() before reusing a code-based action
+// (codes are single use per step).
+func (h *harness) totp(secret string) string {
+	h.t.Helper()
+	c, err := auth.TOTPCode(secret, auth.TOTPStep(h.Clock.Now()))
+	require.NoError(h.t, err)
+	return c
+}
+
+// nextStep advances the clock by one TOTP period.
+func (h *harness) nextStep() { h.Clock.Advance(auth.TOTPPeriod) }
+
+// enable2FA sets up and enables two-factor authentication for the client's
+// user through the API and returns the secret and the recovery codes.
+func (c *adminClient) enable2FA() (secret string, codes []string) {
+	c.h.t.Helper()
+	setup := c.post("/auth/2fa/setup", map[string]any{"current_password": storetest.Password}).status(http.StatusOK).object()
+	secret = setup["secret"].(string)
+	var out struct {
+		RecoveryCodes []string `json:"recovery_codes"`
+	}
+	c.post("/auth/2fa/enable", map[string]any{"code": c.h.totp(secret)}).status(http.StatusOK).decode(&out)
+	c.h.nextStep()
+	u, err := c.h.Store.GetAdminUser(c.h.Ctx, c.User.ID)
+	require.NoError(c.h.t, err)
+	c.User = u
+	return secret, out.RecoveryCodes
+}
 
 // login posts e-mail and password (CSRF header set).
 func (h *harness) login(email, password string, opts ...reqOpt) *response {
 	h.t.Helper()
 	return h.do(http.MethodPost, "/api/admin/auth/login", map[string]any{"email": email, "password": password},
 		append([]reqOpt{csrfHeader()}, opts...)...)
+}
+
+// login2FA posts the second step (body keys as given).
+func (h *harness) login2FA(body map[string]any, opts ...reqOpt) *response {
+	h.t.Helper()
+	return h.do(http.MethodPost, "/api/admin/auth/login/2fa", body, append([]reqOpt{csrfHeader()}, opts...)...)
 }
 
 // emails returns the outbox messages of a kind, newest first.

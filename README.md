@@ -77,15 +77,31 @@ docker compose ps                   # 等待 backend 显示 healthy
 3. **配置商用 RPC**（链 → RPC）。内置默认值是免费公共节点，只适合开发测试；生产环境请为每条链填写 Alchemy / Infura / QuickNode（EVM）、TronGrid（`?apikey=`）、Helius（Solana）、GetBlock 或自建节点（BTC/LTC）等地址，可用“测试 RPC”检查。RPC 地址在数据库中加密存储，界面只显示 `协议://主机/…`。
 4. **创建商户与 API key**（商户 → 新建）。webhook 签名密钥和 API key 明文**只显示一次**，请立即保存到商户后端。需要独立收款时，在商户详情页的“收款钱包”里为各条链选择该商户自己的钱包（见第 2 步）。
 5. 按需调整**设置**：账单有效期、宽限期、少付容差、汇率加价、`checkout_base_url`（收银台对外地址，例如 `https://pay.example.com`）、WalletConnect project id 等。
-6. **邮件通知**：配置好 SMTP 后在“设置 → 邮件通知”中发送一封测试邮件，并按需开启运营告警（见下文“管理员账户安全”）。
+6. **保护管理员账户**：在“账户安全”中启用两步验证并保存恢复码；配置好 SMTP 后在“设置 → 邮件通知”中发送一封测试邮件，并按需开启运营告警（见下文“管理员账户安全”）。
 
 ## 管理员账户安全
+
+### 两步验证（TOTP）
+
+- 每位管理员都可以在 **账户安全**（右上角用户菜单或侧边栏）中启用两步验证：输入当前密码 → 用验证器应用（Google Authenticator、1Password、Microsoft Authenticator、Authy 等）扫描二维码，或手动输入分组显示的密钥 → 输入 6 位验证码确认。算法为 RFC 6238（HMAC-SHA1、6 位、30 秒），允许前后各 1 个时间窗口，同一个验证码只能使用一次。
+- 启用后登录分两步：先输入邮箱和密码，再输入验证器中的 6 位验证码（5 分钟内完成，最多输错 5 次，之后需重新登录；同一账户多次输错会被暂时阻止）。启用两步验证会退出该账户在其他设备上的会话。
+- **恢复码**：启用时会显示 10 个一次性恢复码（形如 `abcde-fghjk`），**只显示这一次**，请复制或下载为 `.txt` 并离线保存。手机丢失时，可在登录第二步改用一个恢复码；每个恢复码只能用一次，使用后会收到邮件告知剩余数量。可以在“账户安全”中凭密码和当前验证码重新生成一组（旧的全部失效）。
+- 验证器密钥用 `APP_SECRET` 加密存储，恢复码和登录挑战令牌只保存 SHA-256 哈希；这些内容不会出现在审计日志、应用日志或任何邮件中。
+- **强制所有管理员启用**：在“设置 → 安全”中打开“要求两步验证”（只有自己已启用两步验证的管理员才能打开）。打开后，尚未启用的管理员登录后只能看到设置两步验证的流程，完成前其他所有接口都返回 `403 two_factor_setup_required`；开启期间任何人都不能关闭自己的两步验证。
+- **重置**：owner 可以在“用户”页面重置其他用户的两步验证（删除密钥和恢复码，并退出该用户的所有会话，用户会收到邮件）；不能重置自己的——请在“账户安全”中关闭。
+- **紧急恢复（break glass）**：如果唯一的 owner 丢失了验证器且没有恢复码，在服务器上执行：
+
+  ```bash
+  docker compose exec backend /usr/local/bin/gateway reset-2fa --email owner@example.com
+  ```
+
+  该命令删除此用户的两步验证、退出其所有会话、写入审计日志（操作人 `cli:reset-2fa`），并在配置了邮件时通知该用户。之后可以只用密码登录；若开启了“要求两步验证”，登录后需重新设置。
 
 ### 邮件通知
 
 配置 SMTP（见下文“配置参考”与 `.env.example`）后，网关通过发件箱（失败按 `min(2^n × 30s, 2h)` 重试，最多 8 次）发送：
 
-- **安全通知**（发给相关管理员本人，“设置 → 邮件通知 → 安全通知”控制，默认开启）：从未用过的 IP 登录（账户首次登录不发）、多次登录失败被暂时阻止（每个账户每小时最多一封）、密码被修改（本人或 owner）、账户被创建、角色变更、停用 / 重新启用。
+- **安全通知**（发给相关管理员本人，“设置 → 邮件通知 → 安全通知”控制，默认开启）：从未用过的 IP 登录（账户首次登录不发）、多次登录失败被暂时阻止（每个账户每小时最多一封）、密码被修改（本人或 owner）、两步验证启用 / 关闭 / 被 owner 重置、恢复码重新生成、使用恢复码登录（含剩余数量）、账户被创建、角色变更、停用 / 重新启用。
 - **运营告警**（默认关闭；收件人为“告警收件人”，留空则发给所有启用中的 owner）：Webhook 事件最终投递失败（每个商户每小时最多一封）、收到无法匹配的转账（每条链每小时最多一封）、账单变为少付（每张账单一封）、某条链的扫描器连续失败 10 分钟以上（每条链每 6 小时最多一封）。告警在数据库事务提交之后异步产生，邮件发送失败或变慢不会影响收款处理。
 - 邮件语言由“邮件语言”设置决定（中文 / English）；所有时间以 UTC 显示。邮件中不包含任何密码、密钥、验证码或令牌。
 - 后台“邮件记录”页面可查看发件箱、按状态 / 类型筛选、查看正文，并重试失败的邮件；“设置 → 邮件通知”可以发送测试邮件并显示 SMTP 返回的错误。
@@ -178,9 +194,9 @@ func cryptopayWebhook(w http.ResponseWriter, r *http.Request) {
 | `SMTP_TLS` | `starttls` | `starttls`（必须升级为 TLS，服务器不支持时拒绝发送而不是明文发送）、`tls`（隐式 TLS）、`none`（明文，仅限本机 / 内网中继如 Mailpit） |
 | `WEB_PORT` / `BACKEND_PORT` / `MAILPIT_PORT` / `POSTGRES_PASSWORD` | `3000` / `8080` / `8025` / 开发密码 | 仅 docker compose 使用 |
 
-运行时可调参数（有效期、宽限期、容差、加价、webhook 次数与超时、`checkout_base_url`、邮件通知开关、告警收件人、邮件语言）在后台“设置”中修改。各项说明见 [`.env.example`](.env.example)。
+运行时可调参数（有效期、宽限期、容差、加价、webhook 次数与超时、`checkout_base_url`、是否要求两步验证、邮件通知开关、告警收件人、邮件语言）在后台“设置”中修改。各项说明见 [`.env.example`](.env.example)。
 
-`gateway` 命令：`serve`（默认，启动时自动迁移，`--no-migrate` 关闭）、`migrate`、`create-admin --email --password --role`、`seed-dev`、`healthcheck`、`version`。
+`gateway` 命令：`serve`（默认，启动时自动迁移，`--no-migrate` 关闭）、`migrate`、`create-admin --email --password --role`、`reset-2fa --email`（紧急重置某个管理员的两步验证）、`seed-dev`、`healthcheck`、`version`。
 
 ## 在 Docker 中运行测试
 
@@ -203,13 +219,14 @@ make lint           # gofmt / go vet / eslint / tsc
 - **非托管 / 只读**：网关只保存扩展**公钥**或固定地址，只调用只读 RPC，不签名、不广播交易。资金归集（sweep）由商户自己持有助记词的钱包软件完成，不在本系统范围内。
 - **永远不要粘贴私钥或助记词**。`xprv` 等私钥会被拒绝；任何要求你在后台输入助记词的指引都是错误的。
 - `APP_SECRET` 加密数据库中的 RPC 地址（常含 API key）和 webhook 签名密钥；API key 与会话令牌只保存 SHA-256 哈希。丢失 `APP_SECRET` 会导致这些密文无法解密，泄露则需要轮换所有 RPC key 与 webhook 密钥。
-- 管理后台：HttpOnly + SameSite=Lax 会话 cookie（生产环境 Secure）、所有写操作要求 `X-Requested-With: cryptopay`（CSRF 防护）、登录失败按 IP+邮箱限流、安全事件邮件通知、owner / admin / viewer 三级权限，所有修改写入审计日志（不含密钥、密码和完整 RPC 地址）。
+- 管理后台：HttpOnly + SameSite=Lax 会话 cookie（生产环境 Secure）、所有写操作要求 `X-Requested-With: cryptopay`（CSRF 防护）、登录失败按 IP+邮箱限流、可选（或强制）TOTP 两步验证与一次性恢复码、安全事件邮件通知、owner / admin / viewer 三级权限，所有修改写入审计日志（不含密钥、密码、验证码和完整 RPC 地址）。
 - 账单 UUID 即收银台的访问凭证：不要在公开场合泄露 `checkout_url`。
 
 ### 生产环境检查清单
 
 - [ ] `APP_ENV=production`，全程 HTTPS（反向代理终止 TLS），设置正确的 `checkout_base_url`
 - [ ] 强随机 `APP_SECRET` 并离线备份；强 `ADMIN_PASSWORD`，首次登录后修改；`POSTGRES_PASSWORD` 已修改
+- [ ] 所有管理员启用两步验证并离线保存恢复码，然后在“设置 → 安全”中打开“要求两步验证”；至少保留两个 owner，并记下 `gateway reset-2fa` 紧急恢复步骤
 - [ ] 配置真实的 SMTP 服务（`SMTP_TLS=starttls` 或 `tls`，不要在公网上用 `none`；生产环境去掉或不要暴露 Mailpit），发送测试邮件确认能收到；发件域名配置 SPF / DKIM，避免通知进入垃圾箱
 - [ ] 打开运营告警并设置告警收件人（或确认所有 owner 的邮箱有人查看）
 - [ ] 每条启用的链都配置了商用 RPC（不要依赖免费公共节点），并用“测试 RPC”验证

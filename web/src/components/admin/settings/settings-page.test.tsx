@@ -2,7 +2,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api/client";
-import { renderAdmin, SETTINGS } from "@/test/admin";
+import { adminUser, renderAdmin, SETTINGS } from "@/test/admin";
 import { SettingsForm } from "./settings-page";
 
 const api = vi.hoisted(() => ({ updateSettings: vi.fn(), listAuditLogs: vi.fn(), getEmailStatus: vi.fn(), sendTestEmail: vi.fn() }));
@@ -68,13 +68,15 @@ describe("SettingsForm", () => {
   });
 });
 
-describe("SettingsForm · email", () => {
-  it("saves the email toggles, recipients and language", async () => {
+describe("SettingsForm · security and email", () => {
+  it("saves require 2FA, the email toggles, recipients and language", async () => {
     api.updateSettings.mockImplementation(async (s) => s);
-    renderAdmin(<SettingsForm settings={SETTINGS} />);
+    renderAdmin(<SettingsForm settings={SETTINGS} />, { user: adminUser("owner", { two_factor_enabled: true }) });
     expect(await screen.findByText("Configured: sent through mailpit from CryptoPay <no-reply@cryptopay.local>.")).toBeInTheDocument();
+    expect(screen.queryByText(/you haven't enabled it yet/)).not.toBeInTheDocument();
     expect(screen.getByText("No recipients: alerts go to every active Owner.")).toBeInTheDocument();
 
+    await userEvent.click(screen.getByRole("switch", { name: "Require two-step verification for every admin" }));
     await userEvent.click(screen.getByRole("switch", { name: "Operational alert emails" }));
     await userEvent.click(screen.getByRole("switch", { name: "Security emails" }));
     const recipients = screen.getByLabelText("Alert recipients");
@@ -96,12 +98,29 @@ describe("SettingsForm · email", () => {
     await waitFor(() =>
       expect(api.updateSettings).toHaveBeenCalledWith({
         ...SETTINGS,
+        require_2fa: true,
         alert_emails: true,
         security_emails: false,
         alert_recipients: ["ops@example.com", "cfo@example.com"],
         email_locale: "en",
       }),
     );
+  });
+
+  it("explains the precondition and surfaces the 409 on the switch", async () => {
+    api.updateSettings.mockRejectedValue(
+      new ApiError({ status: 409, code: "conflict", message: "enable two-factor authentication for your own account before requiring it for everyone" }),
+    );
+    renderAdmin(<SettingsForm settings={SETTINGS} />, { user: adminUser("admin") });
+    expect(screen.getByText(/you haven't enabled it yet/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Enable it under Account security" })).toHaveAttribute("href", "/admin/security");
+    const toggle = screen.getByRole("switch", { name: "Require two-step verification for every admin" });
+    await userEvent.click(toggle);
+    await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(
+      await screen.findByText("Couldn't turn it on: enable two-factor authentication for your own account before requiring it for everyone"),
+    ).toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-invalid", "true");
   });
 
   it("says clearly when email is not configured", async () => {
@@ -135,7 +154,7 @@ describe("SettingsForm · email", () => {
 
   it("is read-only for viewers, including the test email", async () => {
     renderAdmin(<SettingsForm settings={SETTINGS} />, { role: "viewer" });
-    expect(screen.getByRole("switch", { name: "Security emails" })).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "Require two-step verification for every admin" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Send test email" })).toBeDisabled();
     expect(screen.getByLabelText("Alert recipients")).toBeDisabled();
   });

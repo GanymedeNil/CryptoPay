@@ -1,15 +1,10 @@
 package api
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -20,39 +15,6 @@ import (
 	"cryptopay/internal/store"
 	"cryptopay/internal/store/storetest"
 )
-
-// logBuffer captures the API's log output (goroutine-safe).
-type logBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *logBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *logBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-// withLog sends the API's logs (debug level) to buf. Put it before withEmail.
-func withLog(buf *logBuffer) harnessOpt {
-	return func(d *Deps) {
-		d.Logger = slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	}
-}
-
-// detailOf decodes an audit entry's detail.
-func detailOf(t *testing.T, l domain.AuditLog) map[string]any {
-	t.Helper()
-	var m map[string]any
-	require.NoError(t, json.Unmarshal(l.Detail, &m))
-	return m
-}
 
 func TestEmailStatusAndTest(t *testing.T) {
 	t.Parallel()
@@ -111,6 +73,7 @@ func TestEmailNotConfigured(t *testing.T) {
 	u := owner.post("/users", map[string]any{"email": "new@example.com", "password": "long-enough-1", "role": "viewer"}).
 		status(http.StatusCreated).object()
 	owner.patch("/users/"+u["id"].(string), map[string]any{"role": "admin"}).status(http.StatusOK)
+	owner.enable2FA()
 	owner.post("/auth/password", map[string]any{"current_password": storetest.Password, "new_password": "another-pass-1"}).
 		status(http.StatusNoContent)
 	p, err := h.Store.ListEmails(h.Ctx, storeEmailFilterAll())
@@ -125,8 +88,7 @@ func TestEmailOutboxAPI(t *testing.T) {
 	owner := h.newAdmin(domain.RoleOwner)
 	admin := h.newAdmin(domain.RoleAdmin)
 	viewer := h.newAdmin(domain.RoleViewer)
-	h.login(admin.User.Email, storetest.Password, fromIP("203.0.113.5")).status(http.StatusOK) // security.new_login
-	h.Step()
+	admin.enable2FA()                                                                                     // security.2fa_enabled
 	owner.patch("/users/"+admin.User.ID.String(), map[string]any{"role": "viewer"}).status(http.StatusOK) // security.role_changed
 	h.Step()
 
@@ -143,7 +105,7 @@ func TestEmailOutboxAPI(t *testing.T) {
 		assert.Equal(t, "pending", it["status"])
 		assert.Nil(t, it["sent_at"])
 	}
-	owner.get("/email/outbox?kind=" + notify.KindNewLogin).status(http.StatusOK).decode(&page)
+	owner.get("/email/outbox?kind=" + notify.Kind2FAEnabled).status(http.StatusOK).decode(&page)
 	require.Equal(t, 1, page.Total)
 	id := page.Items[0]["id"].(string)
 	owner.get("/email/outbox?status=failed").status(http.StatusOK).decode(&page)
@@ -267,6 +229,7 @@ func TestSettingsSecurityAndEmailFields(t *testing.T) {
 	h := newHarness(t)
 	owner := h.newAdmin(domain.RoleOwner)
 	st := owner.get("/settings").status(http.StatusOK).object()
+	assert.Equal(t, false, st["require_2fa"])
 	assert.Equal(t, true, st["security_emails"])
 	assert.Equal(t, false, st["alert_emails"])
 	assert.Equal(t, []any{}, st["alert_recipients"])
@@ -285,6 +248,7 @@ func TestSettingsSecurityAndEmailFields(t *testing.T) {
 		mod   func(map[string]any)
 		field string
 	}{
+		{"missing require_2fa", func(m map[string]any) { delete(m, "require_2fa") }, "require_2fa"},
 		{"missing security_emails", func(m map[string]any) { delete(m, "security_emails") }, "security_emails"},
 		{"missing alert_emails", func(m map[string]any) { delete(m, "alert_emails") }, "alert_emails"},
 		{"missing recipients", func(m map[string]any) { delete(m, "alert_recipients") }, "alert_recipients"},
@@ -316,36 +280,7 @@ func TestSettingsSecurityAndEmailFields(t *testing.T) {
 	changes := detailOf(t, logs[0])["changes"].(map[string]any)
 	assert.Contains(t, changes, "alert_recipients")
 	assert.Contains(t, changes, "email_locale")
+	assert.NotContains(t, changes, "require_2fa")
 }
 
 func storeEmailFilterAll() store.EmailFilter { return store.EmailFilter{PageSize: store.MaxPageSize} }
-
-func TestPasswordThrottleMailsOncePerHour(t *testing.T) {
-	t.Parallel()
-	h := newHarness(t, withEmail(), withLimits(Limits{LoginIP: Limit{Rate: 1000, Burst: 1000}, LoginFailures: 2, LoginWindow: 10 * time.Minute}))
-	u := storetest.AdminUser(t, h.Store, domain.RoleAdmin)
-	for _, ip := range []string{"198.51.100.1", "198.51.100.2"} {
-		for range 2 {
-			h.login(u.Email, "wrong-password", fromIP(ip)).apiError(http.StatusUnauthorized, CodeUnauthorized)
-		}
-		h.login(u.Email, storetest.Password, fromIP(ip)).apiError(http.StatusTooManyRequests, CodeRateLimited)
-	}
-	mails := h.emails(notify.KindLoginBlocked)
-	require.Len(t, mails, 1, "at most one per account per hour")
-	assert.Equal(t, u.Email, mails[0].To)
-	assert.Contains(t, mails[0].BodyText, "198.51.100.1")
-	assert.NotContains(t, mails[0].BodyText, "wrong-password")
-
-	// An unknown e-mail never mails anybody.
-	for range 3 {
-		h.login("nobody@example.com", "x-password", fromIP("198.51.100.3"))
-	}
-	assert.Len(t, h.emails(notify.KindLoginBlocked), 1)
-
-	// An hour later it may mail again.
-	h.Clock.Advance(61 * time.Minute)
-	for range 2 {
-		h.login(u.Email, "wrong-password", fromIP("198.51.100.4"))
-	}
-	assert.Len(t, h.emails(notify.KindLoginBlocked), 2)
-}

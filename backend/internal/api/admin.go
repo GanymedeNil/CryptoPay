@@ -40,79 +40,93 @@ func adminFrom(ctx context.Context) (adminCtx, bool) {
 func (a *API) adminRoutes(r chi.Router) {
 	r.Use(a.csrf)
 	r.With(a.limitByIP(a.loginLimit)).Post("/auth/login", a.login)
+	r.With(a.limitByIP(a.loginLimit)).Post("/auth/login/2fa", a.loginTwoFactor)
 	r.Post("/auth/logout", a.logout)
 
 	r.Group(func(r chi.Router) {
 		r.Use(a.adminAuth)
-		// Any role, including viewers.
+		// Any role, including viewers; reachable while two-factor setup is
+		// still required (require_2fa).
 		r.Get("/auth/me", a.me)
 		r.Post("/auth/password", a.changePassword)
-		r.Get("/email/status", a.emailStatus)
+		r.Post("/auth/2fa/setup", a.twoFactorSetup)
+		r.Post("/auth/2fa/enable", a.twoFactorEnable)
 
 		r.Group(func(r chi.Router) {
-			// Viewers are read-only.
-			r.Use(a.requireWriteForMutations)
+			r.Use(a.requireTwoFactorSetup)
 
-			r.Get("/overview", a.adminOverview)
+			// Own account, any role.
+			r.Post("/auth/2fa/disable", a.twoFactorDisable)
+			r.Post("/auth/2fa/recovery-codes", a.twoFactorRecoveryCodes)
 
-			r.Get("/invoices", a.adminListInvoices)
-			r.Post("/invoices", a.adminCreateInvoice)
-			r.Get("/invoices/{id}", a.adminGetInvoice)
-			r.Post("/invoices/{id}/cancel", a.adminCancelInvoice)
-			r.Post("/invoices/{id}/mark-paid", a.adminMarkPaid)
-
-			r.Get("/transfers", a.adminListTransfers)
-			r.Post("/transfers/{id}/assign", a.adminAssignTransfer)
-
-			r.Get("/merchants", a.adminListMerchants)
-			r.Post("/merchants", a.adminCreateMerchant)
-			r.Get("/merchants/{id}", a.adminGetMerchant)
-			r.Patch("/merchants/{id}", a.adminUpdateMerchant)
-			r.Post("/merchants/{id}/api-keys", a.adminCreateAPIKey)
-			r.Delete("/merchants/{id}/api-keys/{key_id}", a.adminRevokeAPIKey)
-			r.Post("/merchants/{id}/webhook-secret", a.adminRotateWebhookSecret)
-			r.Put("/merchants/{id}/wallets/{chain_id}", a.adminSetMerchantWallet)
-			r.Delete("/merchants/{id}/wallets/{chain_id}", a.adminUnsetMerchantWallet)
-
-			r.Get("/chains", a.adminListChains)
-			r.Patch("/chains/{id}", a.adminUpdateChain)
-			r.Post("/chains/{id}/test-rpc", a.adminTestRPC)
-
-			r.Get("/assets", a.adminListAssets)
-			r.Post("/assets", a.adminCreateAsset)
-			r.Patch("/assets/{id}", a.adminUpdateAsset)
-
-			r.Get("/wallets", a.adminListWallets)
-			r.Post("/wallets/preview", a.adminPreviewWallet)
-			r.Post("/wallets", a.adminCreateWallet)
-			r.Patch("/wallets/{id}", a.adminUpdateWallet)
-			r.Delete("/wallets/{id}", a.adminDeleteWallet)
-
-			r.Get("/webhook-events", a.adminListWebhookEvents)
-			r.Post("/webhook-events/{id}/retry", a.adminRetryWebhookEvent)
-
-			r.Get("/settings", a.adminGetSettings)
-			r.Put("/settings", a.adminPutSettings)
-
-			r.Get("/audit-logs", a.adminListAuditLogs)
+			r.Get("/email/status", a.emailStatus)
 
 			r.Group(func(r chi.Router) {
-				// E-mail addressed to other admins: owners and admins only,
-				// reads included.
-				r.Use(a.requireWriteRole)
-				r.Post("/email/test", a.emailTest)
-				r.Get("/email/outbox", a.emailOutbox)
-				r.Get("/email/outbox/{id}", a.emailGet)
-				r.Post("/email/outbox/{id}/retry", a.emailRetry)
-			})
+				// Viewers are read-only.
+				r.Use(a.requireWriteForMutations)
 
-			r.Group(func(r chi.Router) {
-				// User management is owner-only, reads included.
-				r.Use(a.requireOwner)
-				r.Get("/users", a.adminListUsers)
-				r.Post("/users", a.adminCreateUser)
-				r.Patch("/users/{id}", a.adminUpdateUser)
-				r.Delete("/users/{id}", a.adminDeleteUser)
+				r.Get("/overview", a.adminOverview)
+
+				r.Get("/invoices", a.adminListInvoices)
+				r.Post("/invoices", a.adminCreateInvoice)
+				r.Get("/invoices/{id}", a.adminGetInvoice)
+				r.Post("/invoices/{id}/cancel", a.adminCancelInvoice)
+				r.Post("/invoices/{id}/mark-paid", a.adminMarkPaid)
+
+				r.Get("/transfers", a.adminListTransfers)
+				r.Post("/transfers/{id}/assign", a.adminAssignTransfer)
+
+				r.Get("/merchants", a.adminListMerchants)
+				r.Post("/merchants", a.adminCreateMerchant)
+				r.Get("/merchants/{id}", a.adminGetMerchant)
+				r.Patch("/merchants/{id}", a.adminUpdateMerchant)
+				r.Post("/merchants/{id}/api-keys", a.adminCreateAPIKey)
+				r.Delete("/merchants/{id}/api-keys/{key_id}", a.adminRevokeAPIKey)
+				r.Post("/merchants/{id}/webhook-secret", a.adminRotateWebhookSecret)
+				r.Put("/merchants/{id}/wallets/{chain_id}", a.adminSetMerchantWallet)
+				r.Delete("/merchants/{id}/wallets/{chain_id}", a.adminUnsetMerchantWallet)
+
+				r.Get("/chains", a.adminListChains)
+				r.Patch("/chains/{id}", a.adminUpdateChain)
+				r.Post("/chains/{id}/test-rpc", a.adminTestRPC)
+
+				r.Get("/assets", a.adminListAssets)
+				r.Post("/assets", a.adminCreateAsset)
+				r.Patch("/assets/{id}", a.adminUpdateAsset)
+
+				r.Get("/wallets", a.adminListWallets)
+				r.Post("/wallets/preview", a.adminPreviewWallet)
+				r.Post("/wallets", a.adminCreateWallet)
+				r.Patch("/wallets/{id}", a.adminUpdateWallet)
+				r.Delete("/wallets/{id}", a.adminDeleteWallet)
+
+				r.Get("/webhook-events", a.adminListWebhookEvents)
+				r.Post("/webhook-events/{id}/retry", a.adminRetryWebhookEvent)
+
+				r.Get("/settings", a.adminGetSettings)
+				r.Put("/settings", a.adminPutSettings)
+
+				r.Get("/audit-logs", a.adminListAuditLogs)
+
+				r.Group(func(r chi.Router) {
+					// E-mail addressed to other admins: owners and admins only,
+					// reads included.
+					r.Use(a.requireWriteRole)
+					r.Post("/email/test", a.emailTest)
+					r.Get("/email/outbox", a.emailOutbox)
+					r.Get("/email/outbox/{id}", a.emailGet)
+					r.Post("/email/outbox/{id}/retry", a.emailRetry)
+				})
+
+				r.Group(func(r chi.Router) {
+					// User management is owner-only, reads included.
+					r.Use(a.requireOwner)
+					r.Get("/users", a.adminListUsers)
+					r.Post("/users", a.adminCreateUser)
+					r.Patch("/users/{id}", a.adminUpdateUser)
+					r.Delete("/users/{id}", a.adminDeleteUser)
+					r.Delete("/users/{id}/2fa", a.adminResetTwoFactor)
+				})
 			})
 		})
 	})
@@ -194,6 +208,37 @@ func (a *API) requireWriteRole(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// requireTwoFactorSetup answers 403 two_factor_setup_required while the
+// require_2fa setting is on and the caller has not enabled two-factor
+// authentication (docs/api.md "Two-factor authentication").
+func (a *API) requireTwoFactorSetup(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ad, _ := adminFrom(r.Context())
+		if !ad.User.TwoFactorEnabled() {
+			required, err := a.twoFactorRequired(r.Context())
+			if err != nil {
+				a.fail(w, r, err)
+				return
+			}
+			if required {
+				a.fail(w, r, &Error{Status: http.StatusForbidden, Code: CodeTwoFactorSetupRequired,
+					Message: "two-factor authentication is required: set it up on the account security page first"})
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// twoFactorRequired reports the require_2fa setting.
+func (a *API) twoFactorRequired(ctx context.Context) (bool, error) {
+	st, err := a.store.GetSettings(ctx)
+	if err != nil {
+		return false, err
+	}
+	return st.Require2FA, nil
 }
 
 // requireOwner restricts user management to owners (403).

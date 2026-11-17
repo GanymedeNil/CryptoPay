@@ -4,12 +4,15 @@
  * Auth is the HttpOnly `cp_session` cookie set by `login`; the shared client
  * sends `credentials: "same-origin"` and the `X-Requested-With: cryptopay`
  * CSRF header on every mutation. A 401 means "not signed in" → go to login.
+ * Accounts with two-factor authentication sign in in two steps: `login`
+ * answers a `LoginChallenge` (202, no cookie) and `loginTwoFactor` completes it.
  */
 import { apiClient, seg, type ApiClient } from "./client";
 import type {
   AdminCreateInvoice,
   AdminInvoice,
   AdminInvoiceQuery,
+  AdminMe,
   AdminUser,
   Asset,
   AssignTransferRequest,
@@ -31,6 +34,8 @@ import type {
   InvoiceDetail,
   ItemsResponse,
   LoginRequest,
+  LoginResponse,
+  LoginTwoFactorRequest,
   MarkPaidRequest,
   Merchant,
   MerchantDetail,
@@ -39,6 +44,8 @@ import type {
   OverviewQuery,
   Page,
   MerchantWallet,
+  RecoveryCodesResponse,
+  RegenerateRecoveryCodesRequest,
   RotateWebhookSecretResponse,
   SetMerchantWalletRequest,
   Settings,
@@ -46,6 +53,10 @@ import type {
   TestEmailResult,
   TestRpcRequest,
   TestRpcResult,
+  TwoFactorDisableRequest,
+  TwoFactorEnableRequest,
+  TwoFactorSetupRequest,
+  TwoFactorSetupResponse,
   Transfer,
   TransferQuery,
   UpdateAssetRequest,
@@ -67,15 +78,34 @@ type Opts = { signal?: AbortSignal };
 export function createAdminApi(client: ApiClient = apiClient) {
   return {
     // ---- auth ------------------------------------------------------------
-    /** `POST /auth/login` (401 bad credentials; 429 after repeated failures). */
-    login: (body: LoginRequest) => client.post<AdminUser>(`${A}/auth/login`, body),
+    /**
+     * `POST /auth/login`: `AdminUser` + cookie, or `202 LoginChallenge` (no
+     * cookie) for an account with two-factor authentication — see
+     * `isLoginChallenge` in `@/lib/admin/two-factor` (401 bad credentials; 429 after repeated failures).
+     */
+    login: (body: LoginRequest) => client.post<LoginResponse>(`${A}/auth/login`, body),
+    /** `POST /auth/login/2fa` (generic 401 for any failure; 429 when throttled). */
+    loginTwoFactor: (body: LoginTwoFactorRequest) => client.post<AdminUser>(`${A}/auth/login/2fa`, body),
     /** `POST /auth/logout` → 204 */
     logout: () => client.post<void>(`${A}/auth/logout`),
     /** `GET /auth/me` */
-    me: (o?: Opts) => client.get<AdminUser>(`${A}/auth/me`, undefined, o),
+    me: (o?: Opts) => client.get<AdminMe>(`${A}/auth/me`, undefined, o),
     /** `POST /auth/password` → 204 (min 8 chars). */
     changePassword: (body: ChangePasswordRequest) =>
       client.post<void>(`${A}/auth/password`, body),
+
+    // ---- own two-factor authentication ----------------------------------
+    /** `POST /auth/2fa/setup` (pending secret; 409 when already enabled). */
+    setupTwoFactor: (body: TwoFactorSetupRequest) =>
+      client.post<TwoFactorSetupResponse>(`${A}/auth/2fa/setup`, body),
+    /** `POST /auth/2fa/enable` → recovery codes, shown once. */
+    enableTwoFactor: (body: TwoFactorEnableRequest) =>
+      client.post<RecoveryCodesResponse>(`${A}/auth/2fa/enable`, body),
+    /** `POST /auth/2fa/disable` → 204 (409 while `require_2fa` is on). */
+    disableTwoFactor: (body: TwoFactorDisableRequest) => client.post<void>(`${A}/auth/2fa/disable`, body),
+    /** `POST /auth/2fa/recovery-codes` → a new set of recovery codes. */
+    regenerateRecoveryCodes: (body: RegenerateRecoveryCodesRequest) =>
+      client.post<RecoveryCodesResponse>(`${A}/auth/2fa/recovery-codes`, body),
 
     // ---- overview --------------------------------------------------------
     /** `GET /overview?days=` (1..365, default 30). */
@@ -192,6 +222,8 @@ export function createAdminApi(client: ApiClient = apiClient) {
       client.patch<AdminUser>(`${A}/users/${seg(id)}`, body),
     /** `DELETE /users/{id}` → 204 */
     deleteUser: (id: string) => client.delete<void>(`${A}/users/${seg(id)}`),
+    /** `DELETE /users/{id}/2fa` → 204 (owner reset of another user's two-factor authentication). */
+    resetUserTwoFactor: (id: string) => client.delete<void>(`${A}/users/${seg(id)}/2fa`),
 
     // ---- audit -----------------------------------------------------------
     /** `GET /audit-logs` */

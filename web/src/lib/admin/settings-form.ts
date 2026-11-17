@@ -21,6 +21,7 @@ export interface SettingsFormValues {
   webhook_timeout_seconds: string;
   checkout_base_url: string;
   walletconnect_project_id: string;
+  require_2fa: boolean;
   security_emails: boolean;
   alert_emails: boolean;
   alert_recipients: string[];
@@ -63,6 +64,7 @@ export function settingsToForm(s: Settings): SettingsFormValues {
     webhook_timeout_seconds: String(s.webhook_timeout_seconds),
     checkout_base_url: s.checkout_base_url,
     walletconnect_project_id: s.walletconnect_project_id,
+    require_2fa: s.require_2fa,
     security_emails: s.security_emails,
     alert_emails: s.alert_emails,
     alert_recipients: [...(s.alert_recipients ?? [])],
@@ -86,6 +88,7 @@ export function formToSettings(v: SettingsFormValues): Settings {
     webhook_timeout_seconds: Number(v.webhook_timeout_seconds),
     checkout_base_url: v.checkout_base_url.trim().replace(/\/+$/, ""),
     walletconnect_project_id: v.walletconnect_project_id.trim(),
+    require_2fa: v.require_2fa,
     security_emails: v.security_emails,
     alert_emails: v.alert_emails,
     alert_recipients: v.alert_recipients.map((r) => r.trim()).filter(Boolean),
@@ -104,6 +107,7 @@ export const SETTINGS_FIELD_MAP: Record<keyof Settings, keyof SettingsFormValues
   webhook_timeout_seconds: "webhook_timeout_seconds",
   checkout_base_url: "checkout_base_url",
   walletconnect_project_id: "walletconnect_project_id",
+  require_2fa: "require_2fa",
   security_emails: "security_emails",
   alert_emails: "alert_emails",
   alert_recipients: "alert_recipients",
@@ -166,6 +170,7 @@ export function settingsSchema(t: TranslateFn, locale: Locale = "en") {
           }
         }, t("admin.settings.validation.url")),
       walletconnect_project_id: z.string().trim().max(128),
+      require_2fa: z.boolean(),
       security_emails: z.boolean(),
       alert_emails: z.boolean(),
       alert_recipients: z
