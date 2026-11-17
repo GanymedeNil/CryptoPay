@@ -1,152 +1,158 @@
-# 测试链手动走查流程
+# Testnet walkthrough
 
-用真实测试网（Sepolia、Tron Nile、Bitcoin testnet3）把一笔订单从下单走到 Webhook 送达。
-整个过程不涉及真实资金。
+Take one invoice from creation to a delivered webhook on real test networks (Sepolia, Tron Nile, Bitcoin testnet3).
+No real funds are involved at any point.
 
-## 0. 前提
+## 0. Prerequisites
 
-- 服务已启动：`make up`，`http://localhost:3000/healthz` 返回 200。
-- 已执行过 `make seed-dev`。它会启用三条测试链，并给它们分配**仅供测试**的默认钱包：
+- The stack is up: `make up`, and `http://localhost:3000/healthz` returns 200.
+- `make seed-dev` has been run. It enables three test chains and gives them **test-only** default wallets:
 
-  | 链 | 默认钱包 | 需要的确认数 | 大约耗时 |
+  | Chain | Default wallet | Confirmations needed | Roughly how long |
   |---|---|---|---|
-  | `sepolia` | TEST ONLY - Hardhat (EVM) | 3 | 约 1 分钟 |
-  | `tron-nile` | TEST ONLY - Hardhat (Tron) | 19 | 约 1 分钟 |
-  | `bitcoin-testnet` | TEST ONLY - Hardhat (Bitcoin testnet) | 1 | 10 分钟到数小时（testnet3 出块不稳定） |
+  | `sepolia` | TEST ONLY - Hardhat (EVM) | 3 | about 1 minute |
+  | `tron-nile` | TEST ONLY - Hardhat (Tron) | 19 | about 1 minute |
+  | `bitcoin-testnet` | TEST ONLY - Hardhat (Bitcoin testnet) | 1 | 10 minutes to several hours (testnet3 block times are erratic) |
 
-  这些钱包由**公开的** Hardhat 助记词派生，任何人都能把里面的币转走（链上常有自动清扫机器人）。
-  这不影响到账检测，但不要往里转超过测试所需的金额。
-- 网关只从链被启用的那一刻开始扫描，不回扫历史区块：链启用前发出的转账不会被发现。
+  These wallets are derived from the **public** Hardhat mnemonic, so anyone can move the coins out of them
+  (the chains often have bots that sweep them automatically). That does not affect payment detection, but do not send
+  more than the test needs.
+- The gateway only starts scanning from the moment a chain is enabled and does not look back at history:
+  a transfer sent before the chain was enabled will not be found.
 
-## 1. 准备付款钱包和测试币
+## 1. Prepare a paying wallet and test coins
 
-付款方要用**普通钱包账户**付款。EVM 和 Tron 上由合约转出的原生币（例如多签钱包、部分水龙头合约直接打到收款地址）检测不到。
+Pay from an **ordinary wallet account**. Native coins sent by a contract on EVM and Tron (for example a multisig wallet,
+or a faucet contract paying straight to the receiving address) are not detected.
 
-| 网络 | 钱包 | 测试币来源 |
+| Network | Wallet | Where to get test coins |
 |---|---|---|
-| Ethereum Sepolia | MetaMask（设置 → 高级 → 显示测试网络） | ETH：任一 Sepolia ETH 水龙头（Google Cloud Web3 faucet、QuickNode faucet 等）；USDC：`https://faucet.circle.com`，网络选 **Ethereum Sepolia**；PYUSD：Google Cloud Web3 faucet 选 PYUSD · Sepolia |
-| Tron Nile | TronLink（切换到 Nile 测试网） | `https://nileex.io/join/getJoinPage`，领 TRX 和 USDT |
-| Bitcoin testnet3 | UniSat 或 OKX 钱包，网络选 **Testnet3** | 任一 testnet3 水龙头 |
+| Ethereum Sepolia | MetaMask (Settings → Advanced → Show test networks) | ETH: any Sepolia ETH faucet (Google Cloud Web3 faucet, QuickNode faucet, …); USDC: `https://faucet.circle.com`, choose the **Ethereum Sepolia** network; PYUSD: Google Cloud Web3 faucet, choose PYUSD · Sepolia |
+| Tron Nile | TronLink (switch to the Nile testnet) | `https://nileex.io/join/getJoinPage` for TRX and USDT |
+| Bitcoin testnet3 | UniSat or OKX Wallet, network **Testnet3** | any testnet3 faucet |
 
-注意：
+Notes:
 
-- **USDC 合约必须是** `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238`（Circle 官方 Sepolia USDC），
-  Sepolia **PYUSD 合约必须是** `0xCaC524BcA292aaade2DF8A05cC58F0a65B1B3bB9`（Paxos 官方测试币），
-  Nile **USDT 合约必须是** `TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf`。别的同名测试代币不会被识别。
-  如果你领到的是其他合约，可以在后台「币种 → 添加代币」里加上。
-- Sepolia 转 USDC 需要少量 ETH 付 gas；Nile 转 USDT 需要 TRX 付能量费（收银台设置的 feeLimit 是 100 TRX）。
-- Bitcoin 的默认 RPC 是 **testnet3**，testnet4 的币检测不到。
+- **The USDC contract must be** `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238` (Circle's official Sepolia USDC),
+  **the Sepolia PYUSD contract must be** `0xCaC524BcA292aaade2DF8A05cC58F0a65B1B3bB9` (Paxos's official test token), and
+  **the Nile USDT contract must be** `TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf`. Look-alike test tokens from other contracts are not recognized.
+  If your faucet gave you a different contract, you can add it in the console under Assets → Add token.
+- Sending USDC on Sepolia needs a little ETH for gas; sending USDT on Nile needs TRX for energy (the checkout sets a feeLimit of 100 TRX).
+- The default Bitcoin RPC is **testnet3**. Coins on testnet4 are not detected.
 
-## 2. 检查后台状态
+## 2. Check the console
 
-1. 打开 `http://localhost:3000/admin`，用 `.env` 里的 `ADMIN_EMAIL` / `ADMIN_PASSWORD` 登录。
-2. 「链与 RPC」：确认 `sepolia`、`tron-nile`、`bitcoin-testnet` 是启用状态，默认钱包是 `TEST ONLY - …`，
-   落后区块数接近 0，没有最近错误。免费公共 RPC 偶尔限流，出现短暂错误后能自己恢复就没问题。
+1. Open `http://localhost:3000/admin` and sign in with `ADMIN_EMAIL` / `ADMIN_PASSWORD` from `.env`.
+2. Chains & RPC: confirm that `sepolia`, `tron-nile` and `bitcoin-testnet` are enabled, that the default wallet is a `TEST ONLY - …` wallet,
+   that "Behind by" is close to 0, and that there is no recent error. The free public RPCs rate-limit now and then;
+   a short error that clears by itself is fine.
 
-## 3. 启动本地 Webhook 接收器
+## 3. Start the local webhook receiver
 
-1. 后台「商户」→ `Demo Shop (dev)` →Webhook 区域点「轮换密钥」，复制新的签名密钥（只显示一次）。
-2. Webhook 地址填 `http://host.docker.internal:9009/hook` 并保存。
-3. 在项目根目录运行：
+1. In the console open Merchants → `Demo Shop (dev)` and click "Rotate secret" in the Webhook section. Copy the new signing secret (it is shown only once).
+2. Set the Webhook URL to `http://host.docker.internal:9009/hook` and save.
+3. In the project root run:
 
    ```bash
-   WEBHOOK_SECRET=whsec_粘贴刚才的密钥 python3 scripts/webhook-receiver.py
+   WEBHOOK_SECRET=whsec_the_secret_you_just_copied python3 scripts/webhook-receiver.py
    ```
 
-   每收到一条通知会打印事件类型、订单状态、已确认金额，以及签名是否校验通过。
+   For every notification it receives it prints the event type, the invoice status, the confirmed amount, and whether the signature verified.
 
-## 4. 创建订单
+## 4. Create an invoice
 
-任选一种方式：
+Either way works:
 
-- **后台**：「订单 → 创建订单」，商户选 `Demo Shop (dev)`，金额 `1`，币种 `USD`。
-- **商户 API**：先在商户详情页「API 密钥 → 创建密钥」拿到 `sk_live_…`，然后：
+- **Console**: Invoices → Create invoice, merchant `Demo Shop (dev)`, amount `1`, currency `USD`.
+- **Merchant API**: first create a key on the merchant page (API keys → Create key) to get an `sk_live_…`, then:
 
   ```bash
   curl -s localhost:3000/api/v1/invoices \
-    -H "Authorization: Bearer sk_live_你的密钥" \
+    -H "Authorization: Bearer sk_live_your_key" \
     -H 'Content-Type: application/json' \
     -d '{"amount":"1","currency":"USD","order_id":"walkthrough-1","title":"Testnet walkthrough"}'
   ```
 
-  用同一个 `order_id` 再发一次会拿到同一张订单（HTTP 200），改了金额会返回 409。
+  Sending the same `order_id` again returns the same invoice (HTTP 200); changing the amount returns 409.
 
-打开返回的 `checkout_url`（形如 `http://localhost:3000/pay/<id>`）。
+Open the returned `checkout_url` (shaped like `http://localhost:3000/pay/<id>`).
 
-## 5. 付款场景
+## 5. Payment scenarios
 
-每个场景用一张新订单。付款后**不要刷新收银台**，页面每 3 秒自动更新。
+Use a fresh invoice for each scenario. After paying, **do not refresh the checkout**: the page updates itself every 3 seconds.
 
-### A. Sepolia USDC，浏览器钱包唤起
+### A. Sepolia USDC, browser wallet
 
-1. 收银台选 **USDC · Ethereum Sepolia**，应付 `1`（稳定币按 1:1 计价）。
-2. 「钱包付款」→ 选 MetaMask → 连接。页面会请求切换到 Sepolia，确认交易。
-3. 预期：
-   - 十几秒内页面进入「确认中」，显示 `n / 3` 确认；
-   - 约 1 分钟后变成「付款成功」，设置了 success_url 时几秒后自动跳转；
-   - 接收器依次打印 `invoice.confirming`、`invoice.paid`，签名 `OK`。
+1. On the checkout choose **USDC · Ethereum Sepolia**. The amount due is `1` (stablecoins are priced 1:1).
+2. "Pay with wallet" tab → choose MetaMask → connect. The page asks the wallet to switch to Sepolia; confirm the transaction.
+3. Expected:
+   - within about ten seconds the page shows "Payment detected" with `n of 3 confirmations`;
+   - after about a minute it turns to "Payment complete"; if a success_url is set, the browser redirects to it a few seconds later;
+   - the receiver prints `invoice.confirming` and then `invoice.paid`, with signature `OK`.
 
 ### A2. Sepolia PYUSD
 
-与 A 相同，收银台改选 **PYUSD · Ethereum Sepolia**。PYUSD 是标准 ERC-20，流程和预期结果与 USDC 一致。
+Same as A, but pick **PYUSD · Ethereum Sepolia** on the checkout. PYUSD is a standard ERC-20, so the flow and the expected result are the same as for USDC.
 
-### B. Sepolia ETH，手机扫码
+### B. Sepolia ETH, phone QR code
 
-1. 选 **ETH · Ethereum Sepolia**，金额按 CoinGecko 实时汇率换算。
-2. 用手机 MetaMask（同样切到 Sepolia）扫「付款请求」二维码，金额和网络会自动带入。
-   如果钱包不认二维码，切到「仅地址」，手动输入页面上的金额。
-3. 预期同 A。
+1. Choose **ETH · Ethereum Sepolia**. The amount is converted at the live CoinGecko rate.
+2. In MetaMask mobile (also switched to Sepolia) scan the "Payment request" QR code; the amount and network are filled in for you.
+   If the wallet does not understand the code, switch to "Address only" and type the amount shown on the page by hand.
+3. Expected: the same as A.
 
-### C. Tron Nile USDT，TronLink
+### C. Tron Nile USDT, TronLink
 
-1. 选 **USDT · Tron Nile**。
-2. 「钱包付款」→ TronLink。确认 TronLink 当前在 Nile 网络，否则页面会提示网络不匹配。
-3. 预期：19 个确认，约 1 分钟后付款成功。
+1. Choose **USDT · Tron Nile**.
+2. "Pay with wallet" → TronLink. Make sure TronLink is on the Nile network, otherwise the page reports a network mismatch.
+3. Expected: 19 confirmations, then "Payment complete" after about a minute.
 
-### D. 部分付款后补齐
+### D. Partial payment, then top up
 
-1. 新订单选 Sepolia USDC，第一笔只转 `0.5`。
-2. 预期：状态「部分支付」，页面显示已收和剩余金额，接收器打印 `invoice.payment_detected`。
-3. 再转剩余的 `0.5`：进入确认中，随后付款成功（`invoice.confirming` → `invoice.paid`）。
+1. On a new invoice choose Sepolia USDC and send only `0.5` first.
+2. Expected: the checkout shows "Partial payment received" with the amount received and the remainder, and the receiver prints `invoice.payment_detected`.
+3. Send the remaining `0.5`: the invoice goes to confirming and then paid (`invoice.confirming` → `invoice.paid`).
 
-### E. 多付
+### E. Overpayment
 
-转 `1.5` USDC：订单付款成功，后台标记「多付」，收银台提示多付，订单详情里能看到多付标记。
+Send `1.5` USDC: the invoice is paid, the console flags it "Overpaid", the checkout tells the payer they sent more than the amount due,
+and the flag is visible on the invoice detail page.
 
-### F. 过期与宽限期
+### F. Expiry and grace period
 
-1. 用商户 API 建一张短期订单：在请求体里加 `"expires_in": 120`。
-2. 收银台选好币种后不付款，等 2 分钟：收银台显示「付款已过期」，后台状态为「已过期」，接收器打印 `invoice.expired`。
-3. 过期后 24 小时宽限期内补付全额：订单仍会变为已支付，后台标记「逾期到账」（`paid_late`）。
+1. Create a short-lived invoice through the merchant API by adding `"expires_in": 120` to the request body.
+2. Pick a coin on the checkout, do not pay, and wait 2 minutes: the checkout shows "This payment has expired", the console status is "Expired",
+   and the receiver prints `invoice.expired`.
+3. Pay the full amount within the 24-hour grace period after expiry: the invoice still becomes Paid, and the console flags it "Paid late" (`paid_late`).
 
-### G. 商户专属钱包
+### G. A merchant's own wallet
 
-`Shop B` 在 Sepolia 上绑定了自己的钱包（`Shop B EVM`，同样是公开测试密钥）。
-给 `Shop B` 建一张 1 USD 订单并选 Sepolia USDC：收款地址与 Demo Shop 的订单不同，各自入账互不影响。
-它的 Webhook 地址需要单独设置。
+`Shop B` has its own wallet on Sepolia (`Shop B EVM`, also a public test key).
+Create a 1 USD invoice for `Shop B` and pick Sepolia USDC: the receiving address differs from the one on a Demo Shop invoice, and each is credited independently.
+Its webhook URL has to be set separately.
 
-### H. Bitcoin testnet3（可选）
+### H. Bitcoin testnet3 (optional)
 
-选 **BTC · Bitcoin Testnet**，用 UniSat 或 OKX 的「钱包付款」，或扫码。
-1 个确认即付款成功，但 testnet3 出块间隔很不稳定，可能要等很久。
+Choose **BTC · Bitcoin Testnet** and pay with "Pay with wallet" in UniSat or OKX, or scan the QR code.
+One confirmation completes the payment, but testnet3 block times are very uneven, so it can take a long while.
 
-## 6. 在后台核对
+## 6. Check it in the console
 
-- **订单详情**：报价（地址、应付/已收/已确认金额、汇率）、链上转账（确认数、区块浏览器链接）、
-  Webhook 投递记录（payload、状态码，可手动重试）。
-- **链上转账**：所有检测到的转账；「未匹配」的转账可以手动关联到订单。
-- **Webhook 投递**：失败的投递会按指数退避重试，也可以手动重试。
-- **总览**：收款金额、订单数、转化率、按币种统计。
-- **审计日志**：刚才每一次后台操作都有记录。
+- **Invoice detail**: quotes (address, amount due / received / confirmed, rate), on-chain transfers (confirmations, block explorer links),
+  and webhook deliveries (payload, status code, with a manual retry).
+- **Transfers**: every transfer that was detected; "Unmatched" transfers can be assigned to an invoice by hand.
+- **Webhook deliveries**: failed deliveries are retried with exponential backoff, and can also be retried by hand.
+- **Overview**: amount received, invoice counts, conversion, breakdown by coin.
+- **Audit log**: every console action you just took is recorded.
 
-## 7. 排查
+## 7. Troubleshooting
 
-| 现象 | 检查 |
+| Symptom | What to check |
 |---|---|
-| 付款后几分钟没反应 | 「链与 RPC」里该链的最近错误和落后区块数；确认付款钱包在正确的网络；确认代币合约是第 1 节列出的那个；`docker compose logs -f backend` |
-| 一直停在确认中 | 正常，等确认数够；免费 RPC 限流时会变慢 |
-| 收到的金额对不上 | 订单详情里看转账金额；少于应付按部分支付处理，低于应付 0.5% 以内视为付清（系统设置可调） |
-| 接收器没收到通知 | 「Webhook 投递」页看最后错误；接收器要在本机 9009 端口运行；签名 `INVALID` 说明密钥填错了 |
-| 收银台没有某个币种 | 该链未启用、没有钱包，或币种被禁用 |
+| Nothing happens a few minutes after paying | Chains & RPC: the chain's last error and how far it is behind; that the paying wallet is on the right network; that the token contract is the one listed in section 1; `docker compose logs -f backend` |
+| Stuck on "Payment detected" | Normal: wait for enough confirmations. It is slower when a free RPC is rate-limiting |
+| The amount received does not match | Look at the transfer amount on the invoice detail page. Less than the amount due is treated as a partial payment; a shortfall within 0.5% counts as paid (adjustable under Settings → Underpayment tolerance) |
+| The receiver got no notification | Webhook deliveries: the "Last error" column; the receiver must run on port 9009 of this machine; a signature `INVALID` means the secret is wrong |
+| A coin is missing from the checkout | The chain is not enabled, has no wallet, or the coin is disabled |
 
-测完后可以在「链与 RPC」里关闭不再需要的测试链。
+When you are done, you can disable the test chains you no longer need under Chains & RPC.
