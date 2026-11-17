@@ -20,12 +20,22 @@
 //	WEBHOOK_ALLOW_PRIVATE bool: let webhooks target loopback / private networks
 //	                      [true in development, false in production]
 //	RPC_<CHAIN_ID>        per-chain RPC URLs, see RPCFromEnv
+//	SMTP_HOST             SMTP server for e-mail notifications (e-mail is
+//	                      configured iff SMTP_HOST and SMTP_FROM are set; a
+//	                      host without SMTP_FROM is an error)
+//	SMTP_PORT             [587]
+//	SMTP_USERNAME         optional, with SMTP_PASSWORD (AUTH PLAIN, only over TLS)
+//	SMTP_PASSWORD
+//	SMTP_FROM             sender, e.g. "CryptoPay <no-reply@example.com>"
+//	SMTP_TLS              "starttls" (required, never falls back to clear text) |
+//	                      "tls" (implicit TLS, usually port 465) | "none" ["starttls"]
 package config
 
 import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/mail"
 	"net/netip"
 	"net/url"
 	"os"
@@ -85,7 +95,35 @@ type Config struct {
 	// (local development, docker-compose). It defaults to true only when
 	// APP_ENV is development; an explicit WEBHOOK_ALLOW_PRIVATE wins.
 	WebhookAllowPrivate bool
+
+	// SMTP is the outgoing mail server (EmailConfigured reports whether it
+	// is set up).
+	SMTP SMTPConfig
 }
+
+// SMTP TLS modes (SMTP_TLS).
+const (
+	SMTPStartTLS = "starttls" // STARTTLS is required; refuse to send in clear text
+	SMTPTLS      = "tls"      // implicit TLS (SMTPS)
+	SMTPNoTLS    = "none"     // clear text (local relays / Mailpit only)
+)
+
+// DefaultSMTPPort is the submission port.
+const DefaultSMTPPort = 587
+
+// SMTPConfig configures outgoing e-mail.
+type SMTPConfig struct {
+	Host     string
+	Port     int
+	Username string
+	Password string
+	From     string // RFC 5322 address, e.g. "CryptoPay <no-reply@example.com>"
+	TLS      string // SMTPStartTLS, SMTPTLS or SMTPNoTLS
+}
+
+// EmailConfigured reports whether e-mail can be sent (SMTP_HOST and
+// SMTP_FROM are set).
+func (c Config) EmailConfigured() bool { return c.SMTP.Host != "" && c.SMTP.From != "" }
 
 // Production reports whether APP_ENV is production.
 func (c Config) Production() bool { return c.Env == EnvProduction }
@@ -138,6 +176,12 @@ func (c Config) LogValue() slog.Value {
 		slog.String("trusted_proxies", strings.Join(proxies, ",")),
 		slog.Bool("scanner_enabled", c.ScannerEnabled),
 		slog.Bool("webhook_allow_private", c.WebhookAllowPrivate),
+		slog.String("smtp_host", c.SMTP.Host),
+		slog.Int("smtp_port", c.SMTP.Port),
+		slog.String("smtp_username", c.SMTP.Username),
+		slog.String("smtp_password", redact(c.SMTP.Password)),
+		slog.String("smtp_from", c.SMTP.From),
+		slog.String("smtp_tls", c.SMTP.TLS),
 	)
 }
 
@@ -280,10 +324,64 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 		fail("WEBHOOK_ALLOW_PRIVATE: %v", err)
 	}
 
+	c.SMTP, err = loadSMTP(get, getenv)
+	if err != nil {
+		fail("%v", err)
+	}
+
 	if len(errs) > 0 {
 		return Config{}, fmt.Errorf("config: %w", errors.Join(errs...))
 	}
 	return c, nil
+}
+
+// loadSMTP reads the SMTP_* variables.
+func loadSMTP(get, getenv func(string) string) (SMTPConfig, error) {
+	s := SMTPConfig{
+		Host:     get("SMTP_HOST"),
+		Port:     DefaultSMTPPort,
+		Username: get("SMTP_USERNAME"),
+		Password: getenv("SMTP_PASSWORD"), // not trimmed: whitespace may be part of it
+		From:     get("SMTP_FROM"),
+		TLS:      strings.ToLower(get("SMTP_TLS")),
+	}
+	var errs []error
+	if p := get("SMTP_PORT"); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			errs = append(errs, fmt.Errorf("SMTP_PORT: invalid port %q", p))
+		} else {
+			s.Port = n
+		}
+	}
+	switch s.TLS {
+	case "":
+		s.TLS = SMTPStartTLS
+	case SMTPStartTLS, SMTPTLS, SMTPNoTLS:
+	default:
+		errs = append(errs, fmt.Errorf("SMTP_TLS must be starttls, tls or none, got %q", s.TLS))
+	}
+	if h := s.Host; h != "" {
+		if _, err := netip.ParseAddr(h); err != nil && strings.ContainsAny(h, "/:@ \t") {
+			errs = append(errs, fmt.Errorf("SMTP_HOST must be a host name or IP address without scheme or port, got %q", h))
+		}
+	}
+	if s.From != "" {
+		a, err := mail.ParseAddress(s.From)
+		if err != nil || strings.ContainsAny(s.From, "\r\n") {
+			errs = append(errs, fmt.Errorf("SMTP_FROM: %q is not an e-mail address (e.g. \"CryptoPay <no-reply@example.com>\")", s.From))
+		} else if a.Address == "" {
+			errs = append(errs, fmt.Errorf("SMTP_FROM: missing address"))
+		}
+	}
+	if s.Host != "" && s.From == "" {
+		// Without a host e-mail is simply off (SMTP_FROM alone is ignored).
+		errs = append(errs, errors.New("SMTP_FROM is required when SMTP_HOST is set (an empty SMTP_HOST disables e-mail)"))
+	}
+	if (s.Username == "") != (s.Password == "") {
+		errs = append(errs, errors.New("SMTP_USERNAME and SMTP_PASSWORD must be set together"))
+	}
+	return s, errors.Join(errs...)
 }
 
 // RPCEnvName returns the environment variable holding RPC URLs for a chain:

@@ -52,6 +52,15 @@
 // ever skipped. A failed VerifyTransfer is softer: it is recorded in
 // last_error but only a rate-limit error triggers the backoff. A panic
 // inside a tick is recovered, logged and treated like an error.
+//
+// # Alerts
+//
+// Config.Notifier (optional) is told, after the respective transaction
+// committed, about every transfer stored without a matching quote, about
+// invoices that became underpaid (via invoice.Service.Committed), and about
+// a chain whose ticks have been failing for FailingAlertAfter or longer
+// (repeated at most every FailingAlertAfter while it keeps failing; the
+// notifier throttles further). Alerts never affect scanning.
 package scanner
 
 import (
@@ -70,6 +79,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"cryptopay/internal/alert"
 	"cryptopay/internal/chain"
 	"cryptopay/internal/domain"
 	"cryptopay/internal/invoice"
@@ -106,6 +116,12 @@ type Config struct {
 	TickTimeout time.Duration // default 5m
 	// DefaultPollInterval is used when a chain has no poll interval.
 	DefaultPollInterval time.Duration // default 5s
+	// FailingAlertAfter is how long a chain's ticks must keep failing before
+	// Notifier.ScannerFailing is called.
+	FailingAlertAfter time.Duration // default 10m
+	// Notifier receives operational alerts (nil = none). It must not block
+	// (use an alert.Queue).
+	Notifier alert.Notifier
 }
 
 func (c Config) withDefaults() Config {
@@ -120,6 +136,7 @@ func (c Config) withDefaults() Config {
 	def(&c.BackoffMax, 2*time.Minute)
 	def(&c.TickTimeout, 5*time.Minute)
 	def(&c.DefaultPollInterval, 5*time.Second)
+	def(&c.FailingAlertAfter, 10*time.Minute)
 	if c.BackoffMax < c.BackoffBase {
 		c.BackoffMax = c.BackoffBase
 	}
@@ -270,6 +287,7 @@ func active(c domain.Chain) bool {
 // runChain ticks one chain until ctx is cancelled.
 func (m *Manager) runChain(ctx context.Context, chainID string) {
 	failures := 0
+	var streak failStreak
 	for ctx.Err() == nil {
 		tctx, cancel := context.WithTimeout(ctx, m.cfg.TickTimeout)
 		res, err := m.TickOnce(tctx, chainID)
@@ -287,11 +305,17 @@ func (m *Manager) runChain(ctx context.Context, chainID string) {
 			if failures%m.cfg.InvalidateAfter == 0 {
 				m.clients.Invalidate(chainID)
 			}
+			if since, ok := streak.fail(m.clock(), m.cfg.FailingAlertAfter); ok {
+				lastErr := SanitizeError(err)
+				alert.Notify(m.cfg.Notifier, m.log, func(n alert.Notifier) { n.ScannerFailing(ctx, chainID, since, lastErr) })
+			}
 		case res.Behind:
 			failures = 0
+			streak = failStreak{}
 			wait = 20 * time.Millisecond
 		default:
 			failures = 0
+			streak = failStreak{}
 			wait = res.PollInterval
 			if wait <= 0 {
 				wait = m.cfg.DefaultPollInterval
@@ -305,6 +329,27 @@ func (m *Manager) runChain(ctx context.Context, chainID string) {
 		case <-timer.C:
 		}
 	}
+}
+
+// failStreak tracks a chain's consecutive failed ticks for the "scanner
+// failing" alert.
+type failStreak struct {
+	since    time.Time // first failed tick of the streak (zero = none)
+	notified time.Time // last alert of the streak
+}
+
+// fail records a failed tick at now. It reports ok (and the streak's start)
+// when the streak has lasted at least after and no alert was raised within
+// the last `after`.
+func (f *failStreak) fail(now time.Time, after time.Duration) (since time.Time, ok bool) {
+	if f.since.IsZero() {
+		f.since = now
+	}
+	if now.Sub(f.since) < after || (!f.notified.IsZero() && now.Sub(f.notified) < after) {
+		return f.since, false
+	}
+	f.notified = now
+	return f.since, true
 }
 
 // runExpiry runs the invoice expiry job periodically.
@@ -662,8 +707,10 @@ func (t *tick) record(ctx context.Context, tr chain.Transfer, watched []store.Wa
 	assetID := assets[tr.Token]
 	cand := match(watched, tr, assetID)
 	var isNew, revived bool
+	var stored domain.Transfer // the inserted transfer (isNew)
+	var ev invoice.Evaluation
 	err := m.store.WithTx(ctx, func(tx *store.Store) error {
-		isNew, revived = false, false
+		isNew, revived, stored, ev = false, false, domain.Transfer{}, invoice.Evaluation{}
 		existing, err := tx.GetTransferByTx(ctx, c.ID, tr.TxHash, tr.Index)
 		found := err == nil
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -688,7 +735,9 @@ func (t *tick) record(ctx context.Context, tr chain.Transfer, watched []store.Wa
 		}
 		changed := false
 		if !found {
-			_, inserted, err := tx.InsertTransferIfNew(ctx, domain.Transfer{
+			var inserted bool
+			var err error
+			stored, inserted, err = tx.InsertTransferIfNew(ctx, domain.Transfer{
 				ChainID: c.ID, TxHash: tr.TxHash, Index: tr.Index, BlockNumber: tr.BlockNumber, BlockHash: tr.BlockHash,
 				BlockTime: tr.BlockTime, FromAddress: tr.From, ToAddress: tr.To, TokenContract: tr.Token,
 				AssetID: assetID, Amount: tr.Amount, QuoteID: quoteID, InvoiceID: invoiceID,
@@ -725,7 +774,8 @@ func (t *tick) record(ctx context.Context, tr chain.Transfer, watched []store.Wa
 			}
 		}
 		if changed && invoiceID != nil {
-			if _, err := m.invoices.Reevaluate(ctx, tx, *invoiceID); err != nil {
+			var err error
+			if ev, err = m.invoices.Reevaluate(ctx, tx, *invoiceID); err != nil {
 				return err
 			}
 		}
@@ -733,6 +783,11 @@ func (t *tick) record(ctx context.Context, tr chain.Transfer, watched []store.Wa
 	})
 	if err != nil {
 		return err
+	}
+	// Committed: now report what deserves an alert.
+	m.invoices.Committed(ctx, ev)
+	if isNew && stored.InvoiceID == nil {
+		alert.Notify(m.cfg.Notifier, m.log, func(n alert.Notifier) { n.TransferUnmatched(ctx, stored) })
 	}
 	switch {
 	case isNew:
@@ -852,8 +907,9 @@ func confirmations(head, block uint64) int {
 // pending any more or was being re-assigned; nothing was changed.
 func (t *tick) finalise(ctx context.Context, id uuid.UUID, status domain.TransferStatus, conf int) (done bool, err error) {
 	m := t.m
+	var ev invoice.Evaluation
 	err = m.store.WithTx(ctx, func(tx *store.Store) error {
-		done = false
+		done, ev = false, invoice.Evaluation{}
 		cur, err := tx.GetTransfer(ctx, id)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
@@ -878,13 +934,16 @@ func (t *tick) finalise(ctx context.Context, id uuid.UUID, status domain.Transfe
 			return err
 		}
 		if locked.InvoiceID != nil {
-			if _, err := m.invoices.Reevaluate(ctx, tx, *locked.InvoiceID); err != nil {
+			if ev, err = m.invoices.Reevaluate(ctx, tx, *locked.InvoiceID); err != nil {
 				return err
 			}
 		}
 		done = true
 		return nil
 	})
+	if err == nil {
+		m.invoices.Committed(ctx, ev)
+	}
 	return done, err
 }
 

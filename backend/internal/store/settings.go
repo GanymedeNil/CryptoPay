@@ -28,14 +28,25 @@ func (s *Store) GetSettings(ctx context.Context) (domain.Settings, error) {
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
 		return domain.DefaultSettings(), fmt.Errorf("store: %s: decode: %w", op, err)
 	}
-	return out, nil
+	return normSettings(out), nil
+}
+
+// normSettings fills in values a stored document may lack or hold as null.
+func normSettings(v domain.Settings) domain.Settings {
+	if v.AlertRecipients == nil {
+		v.AlertRecipients = []string{}
+	}
+	if v.EmailLocale == "" {
+		v.EmailLocale = domain.DefaultSettings().EmailLocale
+	}
+	return v
 }
 
 // PutSettings replaces the runtime settings and returns them as stored.
 // Validation of the values is the caller's job.
 func (s *Store) PutSettings(ctx context.Context, v domain.Settings) (domain.Settings, error) {
 	const op = "put settings"
-	raw, err := json.Marshal(v)
+	raw, err := json.Marshal(normSettings(v))
 	if err != nil {
 		return domain.Settings{}, fmt.Errorf("store: %s: encode: %w", op, err)
 	}

@@ -27,6 +27,8 @@ type Limits struct {
 	// window has passed.
 	LoginFailures int
 	LoginWindow   time.Duration
+	// EmailTest limits POST /email/test per user.
+	EmailTest Limit
 }
 
 // DefaultLimits are the production rate limits.
@@ -37,6 +39,7 @@ var DefaultLimits = Limits{
 	LoginIP:       Limit{Rate: rate.Every(3 * time.Second), Burst: 20},
 	LoginFailures: 5,
 	LoginWindow:   15 * time.Minute,
+	EmailTest:     Limit{Rate: rate.Every(10 * time.Second), Burst: 5},
 }
 
 func (l Limits) withDefaults() Limits {
@@ -51,6 +54,7 @@ func (l Limits) withDefaults() Limits {
 	l.CheckoutGet = pick(l.CheckoutGet, d.CheckoutGet)
 	l.CheckoutQuote = pick(l.CheckoutQuote, d.CheckoutQuote)
 	l.LoginIP = pick(l.LoginIP, d.LoginIP)
+	l.EmailTest = pick(l.EmailTest, d.EmailTest)
 	if l.LoginFailures <= 0 {
 		l.LoginFailures = d.LoginFailures
 	}
@@ -175,8 +179,9 @@ func (f *failureThrottle) blocked(key string) (bool, time.Duration) {
 	return false, 0
 }
 
-// fail records a failure for key.
-func (f *failureThrottle) fail(key string) {
+// fail records a failure for key. It reports whether this failure is the
+// one that makes key blocked (so the caller can react once per block).
+func (f *failureThrottle) fail(key string) (tripped bool) {
 	now := f.now()
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -184,9 +189,10 @@ func (f *failureThrottle) fail(key string) {
 	e, ok := f.entries[key]
 	if !ok || !now.Before(e.start.Add(f.window)) {
 		f.entries[key] = &failures{count: 1, start: now}
-		return
+		return f.max <= 1
 	}
 	e.count++
+	return e.count == f.max
 }
 
 // reset forgets key's failures (after a successful login).

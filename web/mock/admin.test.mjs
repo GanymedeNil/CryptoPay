@@ -155,3 +155,45 @@ describe("admin mock", () => {
     expect(denied.status).toBe(403);
   });
 });
+
+describe("admin mock: e-mail", () => {
+  const get = (path, cookie) => fetch(`${BASE}/api/admin${path}`, { headers: { cookie } });
+  const send = (method, path, cookie, body) =>
+    fetch(`${BASE}/api/admin${path}`, { method, headers: { ...json, cookie }, body: body === undefined ? undefined : JSON.stringify(body) });
+
+  it("reports the e-mail status, sends test mails and keeps an outbox", async () => {
+    const { cookie } = await login("admin@cryptopay.test", "admin-pass-123");
+    expect(await (await get("/email/status", cookie)).json()).toEqual({
+      configured: true,
+      from: "CryptoPay <no-reply@cryptopay.local>",
+      host: "mailpit",
+    });
+    expect(await (await send("POST", "/email/test", cookie, {})).json()).toEqual({ ok: true, error: "" });
+    const bounced = await (await send("POST", "/email/test", cookie, { to: "bounce@example.com" })).json();
+    expect(bounced.ok).toBe(false);
+    expect(bounced.error).toContain("550");
+    expect((await send("POST", "/email/test", cookie, { to: "nope" })).status).toBe(400);
+
+    const all = await (await get("/email/outbox?page_size=100", cookie)).json();
+    expect(all.total).toBeGreaterThan(5);
+    expect(all.items[0]).not.toHaveProperty("body_text");
+    const failed = await (await get("/email/outbox?status=failed", cookie)).json();
+    expect(failed.items.length).toBeGreaterThan(0);
+    expect(failed.items.every((m) => m.status === "failed")).toBe(true);
+    const kind = await (await get("/email/outbox?kind=alert.webhook_failed", cookie)).json();
+    expect(kind.items.every((m) => m.kind === "alert.webhook_failed")).toBe(true);
+    const detail = await (await get(`/email/outbox/${failed.items[0].id}`, cookie)).json();
+    expect(detail.body_text).toContain("CryptoPay");
+    const retried = await (await send("POST", `/email/outbox/${failed.items[0].id}/retry`, cookie)).json();
+    expect(retried.status).toBe("pending");
+    const sent = all.items.find((m) => m.status === "sent");
+    expect((await send("POST", `/email/outbox/${sent.id}/retry`, cookie)).status).toBe(409);
+    // Security events are mailed to the affected admin.
+    expect(all.items.some((m) => m.kind === "security.new_login" && m.to === "owner@cryptopay.test")).toBe(true);
+
+    const viewer = await login("viewer@cryptopay.test", "viewer-pass-123");
+    expect((await get("/email/status", viewer.cookie)).status).toBe(200);
+    expect((await get("/email/outbox", viewer.cookie)).status).toBe(403);
+    expect((await send("POST", "/email/test", viewer.cookie, {})).status).toBe(403);
+  });
+});

@@ -1,12 +1,16 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api/client";
 import { renderAdmin, SETTINGS } from "@/test/admin";
 import { SettingsForm } from "./settings-page";
 
-const api = vi.hoisted(() => ({ updateSettings: vi.fn(), listAuditLogs: vi.fn() }));
+const api = vi.hoisted(() => ({ updateSettings: vi.fn(), listAuditLogs: vi.fn(), getEmailStatus: vi.fn(), sendTestEmail: vi.fn() }));
 vi.mock("@/lib/api/admin", () => ({ adminApi: api }));
+
+beforeEach(() => {
+  api.getEmailStatus.mockResolvedValue({ configured: true, from: "CryptoPay <no-reply@cryptopay.local>", host: "mailpit" });
+});
 
 describe("SettingsForm", () => {
   it("shows seconds as minutes and bps as percent, and saves in API units", async () => {
@@ -61,5 +65,78 @@ describe("SettingsForm", () => {
     renderAdmin(<SettingsForm settings={SETTINGS} />, { role: "viewer" });
     expect(screen.getByLabelText("Invoice lifetime")).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
+  });
+});
+
+describe("SettingsForm · email", () => {
+  it("saves the email toggles, recipients and language", async () => {
+    api.updateSettings.mockImplementation(async (s) => s);
+    renderAdmin(<SettingsForm settings={SETTINGS} />);
+    expect(await screen.findByText("Configured: sent through mailpit from CryptoPay <no-reply@cryptopay.local>.")).toBeInTheDocument();
+    expect(screen.getByText("No recipients: alerts go to every active Owner.")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("switch", { name: "Operational alert emails" }));
+    await userEvent.click(screen.getByRole("switch", { name: "Security emails" }));
+    const recipients = screen.getByLabelText("Alert recipients");
+    await userEvent.type(recipients, "ops@example.com{Enter}");
+    await userEvent.type(recipients, "OPS@example.com{Enter}");
+    expect(screen.getByText("This address is already in the list")).toBeInTheDocument();
+    await userEvent.clear(recipients);
+    await userEvent.type(recipients, "not-an-email");
+    await userEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(screen.getByText("Enter a valid email address")).toBeInTheDocument();
+    await userEvent.clear(recipients);
+    await userEvent.type(recipients, "cfo@example.com, sre@example.com");
+    await userEvent.click(screen.getByRole("button", { name: "Add" }));
+    await userEvent.click(screen.getByRole("button", { name: "Remove sre@example.com" }));
+    await userEvent.click(screen.getByRole("combobox", { name: "Email language" }));
+    await userEvent.click(await screen.findByRole("option", { name: "English" }));
+
+    await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(api.updateSettings).toHaveBeenCalledWith({
+        ...SETTINGS,
+        alert_emails: true,
+        security_emails: false,
+        alert_recipients: ["ops@example.com", "cfo@example.com"],
+        email_locale: "en",
+      }),
+    );
+  });
+
+  it("says clearly when email is not configured", async () => {
+    api.getEmailStatus.mockResolvedValue({ configured: false, from: "", host: "" });
+    renderAdmin(<SettingsForm settings={SETTINGS} />);
+    const note = await screen.findByTestId("email-not-configured");
+    expect(note).toHaveTextContent("Email is not configured");
+    expect(note).toHaveTextContent("SMTP_HOST and SMTP_FROM");
+  });
+
+  it("sends a test email and shows the outcome", async () => {
+    api.sendTestEmail
+      .mockResolvedValueOnce({ ok: true, error: "" })
+      .mockResolvedValueOnce({ ok: false, error: "550 5.1.1 <bounce@example.com>: Recipient address rejected" })
+      .mockRejectedValueOnce(new ApiError({ status: 409, code: "conflict", message: "e-mail is not configured" }));
+    renderAdmin(<SettingsForm settings={SETTINGS} />);
+    const send = screen.getByRole("button", { name: "Send test email" });
+    await userEvent.click(send);
+    await waitFor(() => expect(api.sendTestEmail).toHaveBeenCalledWith({}));
+    expect(await screen.findByTestId("test-email-result")).toHaveTextContent("Test email sent to owner@cryptopay.test.");
+
+    await userEvent.type(screen.getByLabelText("Test recipient"), "bounce@example.com{Enter}");
+    await waitFor(() => expect(api.sendTestEmail).toHaveBeenLastCalledWith({ to: "bounce@example.com" }));
+    expect(await screen.findByText("Sending failed: 550 5.1.1 <bounce@example.com>: Recipient address rejected")).toBeInTheDocument();
+    // Enter in the test field does not submit the settings form.
+    expect(api.updateSettings).not.toHaveBeenCalled();
+
+    await userEvent.click(send);
+    expect(await screen.findByText("Email is not configured, so no test email can be sent.")).toBeInTheDocument();
+  });
+
+  it("is read-only for viewers, including the test email", async () => {
+    renderAdmin(<SettingsForm settings={SETTINGS} />, { role: "viewer" });
+    expect(screen.getByRole("switch", { name: "Security emails" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send test email" })).toBeDisabled();
+    expect(screen.getByLabelText("Alert recipients")).toBeDisabled();
   });
 });

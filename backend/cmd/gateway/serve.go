@@ -14,12 +14,15 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"cryptopay/internal/alert"
 	"cryptopay/internal/api"
 	"cryptopay/internal/auth"
 	"cryptopay/internal/chain/registry"
 	"cryptopay/internal/config"
 	"cryptopay/internal/db"
 	"cryptopay/internal/invoice"
+	"cryptopay/internal/mailer"
+	"cryptopay/internal/notify"
 	"cryptopay/internal/rates"
 	"cryptopay/internal/scanner"
 	"cryptopay/internal/secret"
@@ -35,16 +38,20 @@ const (
 	// HTTP API, the webhook dispatcher (one connection per parallel
 	// delivery), and — with the scanner — one advisory-lock connection plus
 	// one working connection per scanned chain, the expiry job and the
-	// session cleanup.
+	// session cleanup, plus the e-mail dispatcher and the alert queue.
 	poolAPIConns     = 20
 	poolWebhookConns = webhook.DefaultConcurrency
 	poolScannerConns = 2*16 + 2
 	poolMiscConns    = 2
+	poolEmailConns   = mailer.DefaultConcurrency + 1
 )
 
 // poolSize is the default connection pool size for cfg.
 func poolSize(cfg config.Config) int32 {
 	n := poolAPIConns + poolWebhookConns + poolMiscConns
+	if cfg.EmailConfigured() {
+		n += poolEmailConns
+	}
 	if cfg.ScannerEnabled {
 		n += poolScannerConns
 	}
@@ -113,14 +120,35 @@ func runServe(ctx context.Context, args []string, getenv func(string) string, st
 		}
 	}
 
+	// E-mail: security notifications and operational alerts go through the
+	// outbox; without SMTP_HOST/SMTP_FROM nothing is queued and no
+	// dispatcher runs.
+	notifier := notify.New(st, cfg.EmailConfigured(), log.With("component", "notify"), time.Now)
+	var sender *mailer.SMTP
+	var mailDispatcher *mailer.Dispatcher
+	var alerts alert.Notifier // nil without e-mail: the money path reports nothing
+	var alertQueue *alert.Queue
+	if cfg.EmailConfigured() {
+		if sender, err = mailer.NewSMTP(cfg.SMTP); err != nil {
+			return err
+		}
+		mailDispatcher = mailer.NewDispatcher(st, sender, log.With("component", "mailer"), time.Now)
+		alertQueue = alert.NewQueue(notifier, 0, log.With("component", "alert"))
+		alerts = alertQueue
+		log.Info("e-mail enabled", "smtp_host", cfg.SMTP.Host, "smtp_tls", cfg.SMTP.TLS)
+	} else {
+		log.Info("e-mail not configured (SMTP_HOST / SMTP_FROM): no notifications are sent")
+	}
+
 	rp, prefetchRates := newRates(ctx, st, cfg, log)
 	invoices := invoice.New(st, rp, log, time.Now)
+	invoices.SetNotifier(alerts)
 	reg := registry.New(st, registry.DefaultFactories(log))
 	dispatcher := webhook.New(st, log.With("component", "webhook"), time.Now,
-		webhook.AllowPrivateTargets(cfg.WebhookAllowPrivate))
+		webhook.AllowPrivateTargets(cfg.WebhookAllowPrivate), webhook.WithNotifier(alerts))
 	var mgr *scanner.Manager
 	if cfg.ScannerEnabled {
-		mgr = scanner.New(st, reg, invoices, log.With("component", "scanner"), time.Now, scanner.Config{})
+		mgr = scanner.New(st, reg, invoices, log.With("component", "scanner"), time.Now, scanner.Config{Notifier: alerts})
 	} else {
 		log.Warn("SCANNER_ENABLED=false: this instance does not scan chains or expire invoices")
 	}
@@ -129,6 +157,7 @@ func runServe(ctx context.Context, args []string, getenv func(string) string, st
 	defer stopBg()
 	var wg sync.WaitGroup
 	webhookKick := make(chan struct{}, 1)
+	emailKick := make(chan struct{}, 1)
 	chainKick := make(chan string, 32)
 
 	hooks := api.Hooks{
@@ -139,6 +168,14 @@ func runServe(ctx context.Context, args []string, getenv func(string) string, st
 			}
 		},
 	}
+	if mailDispatcher != nil {
+		hooks.EmailKick = func() {
+			select {
+			case emailKick <- struct{}{}:
+			default:
+			}
+		}
+	}
 	if mgr != nil {
 		hooks.ChainChanged = func(chainID string) {
 			select {
@@ -148,10 +185,14 @@ func runServe(ctx context.Context, args []string, getenv func(string) string, st
 		}
 	}
 
-	handler := api.New(api.Deps{
+	deps := api.Deps{
 		Store: st, Invoices: invoices, Registry: reg, Rates: rp, Config: cfg,
-		Logger: log.With("component", "http"), Now: time.Now, Hooks: hooks,
-	})
+		Logger: log.With("component", "http"), Now: time.Now, Hooks: hooks, Notifier: notifier,
+	}
+	if sender != nil {
+		deps.Mailer = sender
+	}
+	handler := api.New(deps)
 	srv := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -174,6 +215,11 @@ func runServe(ctx context.Context, args []string, getenv func(string) string, st
 	wg.Go(func() { _ = dispatcher.Run(bg) })
 	wg.Go(func() { deliverOnKick(bg, dispatcher, webhookKick, log) })
 	wg.Go(func() { cleanupSessions(bg, st, log) })
+	if mailDispatcher != nil {
+		wg.Go(func() { _ = mailDispatcher.Run(bg) })
+		wg.Go(func() { sendOnKick(bg, mailDispatcher, emailKick, log) })
+		wg.Go(func() { alertQueue.Run(bg) })
+	}
 
 	srvErr := make(chan error, 1)
 	go func() { srvErr <- srv.Serve(ln) }()
@@ -287,6 +333,20 @@ func scanOnChange(ctx context.Context, mgr *scanner.Manager, kick <-chan string,
 				log.Info("scan after configuration change failed", "chain_id", id, "error", scanner.SanitizeError(err))
 			}
 			cancel()
+		}
+	}
+}
+
+// sendOnKick sends due e-mail right away when one was queued by the API.
+func sendOnKick(ctx context.Context, d *mailer.Dispatcher, kick <-chan struct{}, log *slog.Logger) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-kick:
+			if _, _, err := d.SendDue(ctx); err != nil && ctx.Err() == nil {
+				log.Warn("e-mail delivery after kick failed", "error", err)
+			}
 		}
 	}
 }

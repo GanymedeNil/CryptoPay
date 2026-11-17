@@ -5,7 +5,8 @@
 // Behaviour mirrors the contract: cookie session (`cp_session`, HttpOnly),
 // CSRF header on every mutation, roles (viewer → 403 on mutations, users →
 // owner only), validation errors with `fields`, 404 / 409 / 422 / 429,
-// paging, filters, and an audit entry for every mutation.
+// paging, filters, an audit entry for every mutation and an e-mail
+// outbox.
 
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
@@ -164,6 +165,18 @@ export function createAdminMock(ctx) {
     active: u.active,
     last_login_at: u.last_login_at,
     created_at: u.created_at,
+  });
+
+  const publicEmail = (m) => ({
+    id: m.id,
+    kind: m.kind,
+    to: m.to,
+    subject: m.subject,
+    status: m.status,
+    attempts: m.attempts,
+    last_error: m.last_error,
+    created_at: m.created_at,
+    sent_at: m.sent_at,
   });
 
   const publicMerchant = (m) => ({
@@ -475,6 +488,11 @@ export function createAdminMock(ctx) {
       users: [],
       sessions: new Map(),
       loginFailures: new Map(),
+      outbox: [],
+      email:
+        process.env.MOCK_SMTP === "off"
+          ? { configured: false, from: "", host: "" }
+          : { configured: true, from: "CryptoPay <no-reply@cryptopay.local>", host: "mailpit" },
       merchants: [],
       chains: [],
       assets: [],
@@ -494,6 +512,10 @@ export function createAdminMock(ctx) {
         webhook_timeout_seconds: 10,
         checkout_base_url: CHECKOUT_BASE,
         walletconnect_project_id: "",
+        security_emails: true,
+        alert_emails: true,
+        alert_recipients: ["ops@cryptopay.test"],
+        email_locale: "zh",
       },
     };
 
@@ -888,6 +910,115 @@ export function createAdminMock(ctx) {
     S.audit.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
     S.audit.forEach((a, i) => (a.id = S.audit.length - i));
     S.auditSeq = S.audit.length + 1;
+
+    // e-mail outbox history
+    const hook = S.webhookEvents.find((e) => e.status === "failed");
+    const failedMerchant = S.merchants.find((m) => m.id === hook?.merchant_id) ?? S.merchants[1];
+    const outboxSeed = [
+      ["security.new_login", owner.email, { ip: "203.0.113.24", ua: "Chrome · macOS" }, 0.4, "sent"],
+      ["alert.webhook_failed", "ops@cryptopay.test", { merchant: failedMerchant.name, event: hook?.event_type ?? "invoice.paid" }, 0.9, "sent"],
+      ["alert.transfer_unmatched", "ops@cryptopay.test", { chain: "Tron", amount: "12.5 USDT" }, 1.2, "sent"],
+      ["alert.invoice_underpaid", "ops@cryptopay.test", { invoice: sorted[3]?.id ?? "" }, 1.6, "failed", "dial tcp: lookup smtp.example.com: no such host"],
+      ["alert.scanner_failing", "ops@cryptopay.test", { chain: "BSC", minutes: 14 }, 4.2, "sent"],
+      ["security.login_blocked", adminUser.email, { ip: "192.0.2.77" }, 5.5, "sent"],
+      ["security.password_changed", adminUser.email, { by: owner.email }, 6, "sent"],
+      ["security.account_deactivated", "former.ops@cryptopay.test", { by: owner.email }, 45, "failed", "550 5.1.1 <former.ops@cryptopay.test>: Recipient address rejected"],
+      ["security.account_created", S.users[2].email, { by: owner.email, role: "viewer" }, 20, "sent"],
+      ["security.role_changed", adminUser.email, { by: owner.email, role: "admin" }, 60, "sent"],
+    ];
+    for (const [kind, to, vars, ageDays, status, err] of outboxSeed) {
+      const m = composeMail(kind, to, vars, t0 - ageDays * DAY);
+      m.status = status;
+      m.attempts = status === "failed" ? 8 : 1;
+      m.last_error = err ?? "";
+      m.sent_at = status === "sent" ? iso(t0 - ageDays * DAY + 4000) : null;
+      S.outbox.push(m);
+    }
+    S.outbox.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+  }
+
+  // ---- e-mail ----------------------------------------------------------------
+
+  const MAIL_TITLES = {
+    "security.new_login": { zh: "新设备登录了你的账号", en: "New sign-in to your account" },
+    "security.login_blocked": { zh: "你的账号登录已被暂时锁定", en: "Sign-in to your account was blocked" },
+    "security.password_changed": { zh: "你的密码已修改", en: "Your password was changed" },
+    "security.account_created": { zh: "已为你创建管理员账号", en: "An admin account was created for you" },
+    "security.role_changed": { zh: "你的角色已变更", en: "Your role was changed" },
+    "security.account_deactivated": { zh: "你的账号已被停用", en: "Your account was deactivated" },
+    "security.account_reactivated": { zh: "你的账号已重新启用", en: "Your account was reactivated" },
+    "alert.webhook_failed": { zh: "Webhook 投递最终失败", en: "Webhook delivery failed" },
+    "alert.transfer_unmatched": { zh: "收到未匹配的转账", en: "Unmatched transfer received" },
+    "alert.invoice_underpaid": { zh: "订单少付", en: "Invoice underpaid" },
+    "alert.scanner_failing": { zh: "扫链持续失败", en: "Chain scanner keeps failing" },
+  };
+
+  /** A plain, calm notification in the configured language (no secrets, codes or tokens). */
+  function composeMail(kind, to, vars, atMs = now()) {
+    const lang = S.settings.email_locale === "en" ? "en" : "zh";
+    const title = MAIL_TITLES[kind]?.[lang] ?? kind;
+    const when = new Date(atMs).toISOString().replace("T", " ").replace(/\.\d+Z$/, " UTC");
+    const facts = Object.entries(vars).map(([k, v]) => `  ${k}: ${v}`);
+    const notYou =
+      lang === "zh"
+        ? "如果这不是你本人或你的同事的操作，请立即登录管理后台修改密码，并联系所有者。"
+        : "If this wasn't you or a colleague, sign in now, change your password and contact an Owner.";
+    const body = [
+      lang === "zh" ? "你好，" : "Hello,",
+      "",
+      title + (lang === "zh" ? "。" : "."),
+      "",
+      `${lang === "zh" ? "时间" : "When"}: ${when}`,
+      ...facts,
+      "",
+      kind.startsWith("security.") ? notYou : lang === "zh" ? "请在管理后台查看详情。" : "See the admin console for details.",
+      "",
+      "— CryptoPay",
+    ].join("\n");
+    return {
+      id: randomUUID(),
+      kind,
+      to,
+      subject: `[CryptoPay] ${title}`,
+      body_text: body,
+      status: "pending",
+      attempts: 0,
+      last_error: "",
+      created_at: iso(atMs),
+      sent_at: null,
+    };
+  }
+
+  /** "Delivers" a queued message after a moment (addresses containing bounce / fail are rejected). */
+  function deliverLater(m) {
+    const timer = setTimeout(() => {
+      if (m.status !== "pending") return;
+      m.attempts += 1;
+      if (/bounce|fail/i.test(m.to)) {
+        m.status = "failed";
+        m.last_error = `550 5.1.1 <${m.to}>: Recipient address rejected`;
+      } else {
+        m.status = "sent";
+        m.sent_at = iso(now());
+        m.last_error = "";
+      }
+    }, 1500);
+    timer.unref?.();
+  }
+
+  /**
+   * Queues a mail like the gateway does: only when e-mail is configured and
+   * the matching toggle is on; `throttleMs` drops it when one of the same
+   * kind went to the same address within that time.
+   */
+  function enqueueMail(kind, to, vars, throttleMs = 0) {
+    if (!S.email.configured) return;
+    if (kind.startsWith("security.") && !S.settings.security_emails) return;
+    if (kind.startsWith("alert.") && !S.settings.alert_emails) return;
+    if (throttleMs && S.outbox.some((m) => m.kind === kind && m.to === to && Date.parse(m.created_at) > now() - throttleMs)) return;
+    const m = composeMail(kind, to, vars);
+    S.outbox.unshift(m);
+    deliverLater(m);
   }
 
   /** Rewrites the timestamps of a seeded invoice so history spreads over days. */
@@ -918,14 +1049,42 @@ export function createAdminMock(ctx) {
     return out;
   }
 
-  function currentUser(req) {
+  /** The request's session and user, or null. */
+  function currentSession(req) {
     const token = parseCookies(req).cp_session;
     if (!token) return null;
     const s = S.sessions.get(token);
     if (!s || s.expires < now()) return null;
     const u = S.users.find((x) => x.id === s.userId);
-    return u && u.active ? u : null;
+    return u && u.active ? { token, session: s, user: u } : null;
   }
+
+  function createSession(u, ip, ua) {
+    // Security mail for a sign-in from an IP this account never signed in from (not on its first sign-in).
+    const logins = S.audit.filter((l) => l.action === "auth.login" && l.target_id === u.id);
+    if (logins.length > 0 && !logins.some((l) => l.ip === ip)) enqueueMail("security.new_login", u.email, { ip, user_agent: ua || "-" });
+    const token = randomBytes(24).toString("base64url");
+    S.sessions.set(token, { userId: u.id, expires: now() + SESSION_MAX_AGE * 1000 });
+    u.last_login_at = iso(now());
+    audit(u, "auth.login", "user", u.id, null, ip);
+    return {
+      body: publicUser(u),
+      headers: { "Set-Cookie": `cp_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_MAX_AGE}` },
+    };
+  }
+
+  function signOutUser(userId, exceptToken) {
+    let n = 0;
+    for (const [tok, s] of S.sessions) {
+      if (s.userId === userId && tok !== exceptToken) {
+        S.sessions.delete(tok);
+        n++;
+      }
+    }
+    return n;
+  }
+
+  const CLEAR_COOKIE = { "Set-Cookie": "cp_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0" };
 
   const clientIp = (req) => String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim().replace(/^::ffff:/, "");
 
@@ -955,27 +1114,30 @@ export function createAdminMock(ctx) {
     const body = mutating ? await ctx.readJson(req) : null;
     if (mutating && body === null) throw bad("request body is not valid JSON");
 
+    const ua = String(req.headers["user-agent"] || "");
     // -- auth (no session needed for login) --
-    if (a === "auth" && b === "login" && method === "POST") return login(body, ip);
+    if (a === "auth" && b === "login" && !c && method === "POST") return login(body, ip, ua);
 
-    const user = currentUser(req);
-    if (!user) throw new HttpError(401, "unauthorized", "not signed in");
+    const cur = currentSession(req);
+    if (!cur) throw new HttpError(401, "unauthorized", "not signed in");
+    const { user, token } = cur;
 
     if (a === "auth") {
       if (b === "logout" && method === "POST") {
-        const token = parseCookies(req).cp_session;
         S.sessions.delete(token);
         audit(user, "auth.logout", "user", user.id, null, ip);
-        return { status: 204, headers: { "Set-Cookie": "cp_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0" } };
+        return { status: 204, headers: CLEAR_COOKIE };
       }
       if (b === "me" && method === "GET") return { body: publicUser(user) };
       if (b === "password" && method === "POST") {
         const fields = {};
-        if (typeof body.current_password !== "string" || body.current_password !== user.password) fields.current_password = "incorrect password";
+        if (typeof body.current_password !== "string" || body.current_password !== user.password) fields.current_password = "is incorrect";
         if (typeof body.new_password !== "string" || body.new_password.length < 8) fields.new_password = "must be at least 8 characters";
         if (Object.keys(fields).length) throw bad("invalid password change", fields);
         user.password = body.new_password;
-        audit(user, "auth.password", "user", user.id, null, ip);
+        const n = signOutUser(user.id, token);
+        audit(user, "auth.password_change", "admin_user", user.id, { other_sessions_revoked: n }, ip);
+        enqueueMail("security.password_changed", user.email, { by: user.email, ip });
         return { status: 204 };
       }
       throw notFound("endpoint");
@@ -1007,6 +1169,8 @@ export function createAdminMock(ctx) {
       case "users":
         if (user.role !== "owner") throw new HttpError(403, "forbidden", "user management is owner-only");
         return usersRoute(user, ip, method, b, body);
+      case "email":
+        return emailRoute(user, ip, method, url, b, c, d, body);
       case "audit-logs":
         if (method === "GET") return { body: auditList(url) };
         break;
@@ -1014,7 +1178,7 @@ export function createAdminMock(ctx) {
     throw notFound("endpoint");
   }
 
-  function login(body, ip) {
+  function login(body, ip, ua) {
     const email = String(body?.email ?? "").trim().toLowerCase();
     const password = String(body?.password ?? "");
     if (!email || !password) throw bad("email and password are required", { ...(email ? {} : { email: "required" }), ...(password ? {} : { password: "required" }) });
@@ -1025,17 +1189,11 @@ export function createAdminMock(ctx) {
     if (!u || u.password !== password || !u.active) {
       fails.push(now());
       S.loginFailures.set(key, fails);
+      if (u && u.active && fails.length >= LOGIN_MAX_FAILURES) enqueueMail("security.login_blocked", u.email, { ip }, 3600_000);
       throw new HttpError(401, "unauthorized", "invalid email or password");
     }
     S.loginFailures.delete(key);
-    const token = randomBytes(24).toString("base64url");
-    S.sessions.set(token, { userId: u.id, expires: now() + SESSION_MAX_AGE * 1000 });
-    u.last_login_at = iso(now());
-    audit(u, "auth.login", "user", u.id, null, ip);
-    return {
-      body: publicUser(u),
-      headers: { "Set-Cookie": `cp_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_MAX_AGE}` },
-    };
+    return createSession(u, ip, ua);
   }
 
   // ---- overview ----------------------------------------------------------------
@@ -1731,10 +1889,16 @@ export function createAdminMock(ctx) {
       if (!isInt(s.webhook_timeout_seconds, 1, 120)) f.webhook_timeout_seconds = "must be 1..120";
       if (typeof s.checkout_base_url !== "string" || !isHttpUrl(s.checkout_base_url) || s.checkout_base_url.endsWith("/")) f.checkout_base_url = "must be an http(s) URL without a trailing slash";
       if (typeof s.walletconnect_project_id !== "string" || s.walletconnect_project_id.length > 128) f.walletconnect_project_id = "max 128 characters";
+      for (const k of ["security_emails", "alert_emails"]) if (typeof s[k] !== "boolean") f[k] = "must be a boolean";
+      if (!Array.isArray(s.alert_recipients)) f.alert_recipients = "is required ([] when not used)";
+      else if (s.alert_recipients.length > 10) f.alert_recipients = "at most 10 addresses";
+      else if (s.alert_recipients.some((r) => typeof r !== "string" || !isEmail(r.trim()))) f.alert_recipients = "must be valid e-mail addresses";
+      else if (new Set(s.alert_recipients.map((r) => r.trim().toLowerCase())).size !== s.alert_recipients.length) f.alert_recipients = "contains duplicates";
+      if (!["zh", "en"].includes(s.email_locale)) f.email_locale = "must be zh or en";
       if (Object.keys(f).length) throw bad("invalid settings", f);
       const detail = {};
       for (const k of Object.keys(S.settings)) {
-        if (s[k] !== S.settings[k]) detail[k] = { from: S.settings[k], to: s[k] };
+        if (JSON.stringify(s[k]) !== JSON.stringify(S.settings[k])) detail[k] = { from: S.settings[k], to: s[k] };
       }
       S.settings = {
         invoice_ttl_seconds: s.invoice_ttl_seconds,
@@ -1746,6 +1910,10 @@ export function createAdminMock(ctx) {
         webhook_timeout_seconds: s.webhook_timeout_seconds,
         checkout_base_url: s.checkout_base_url,
         walletconnect_project_id: s.walletconnect_project_id,
+        security_emails: s.security_emails,
+        alert_emails: s.alert_emails,
+        alert_recipients: s.alert_recipients.map((r) => r.trim()),
+        email_locale: s.email_locale,
       };
       audit(user, "settings.update", "settings", "", detail, ip);
       return { body: S.settings };
@@ -1770,6 +1938,7 @@ export function createAdminMock(ctx) {
       const u = { id: randomUUID(), email, password: body.password, role: body.role, active: true, last_login_at: null, created_at: iso(now()) };
       S.users.push(u);
       audit(user, "user.create", "user", u.id, { email, role: u.role }, ip);
+      enqueueMail("security.account_created", u.email, { by: user.email, role: u.role });
       return { status: 201, body: publicUser(u) };
     }
     const u = S.users.find((x) => x.id === id);
@@ -1786,15 +1955,19 @@ export function createAdminMock(ctx) {
       if (body.role !== undefined && body.role !== u.role) {
         detail.role = { from: u.role, to: body.role };
         u.role = body.role;
+        enqueueMail("security.role_changed", u.email, { by: user.email, role: u.role });
       }
       if (body.active !== undefined && body.active !== u.active) {
         detail.active = { from: u.active, to: body.active };
         u.active = body.active;
-        if (!u.active) for (const [tok, s] of S.sessions) if (s.userId === u.id) S.sessions.delete(tok);
+        if (!u.active) signOutUser(u.id);
+        enqueueMail(u.active ? "security.account_reactivated" : "security.account_deactivated", u.email, { by: user.email });
       }
       if (body.password !== undefined) {
         u.password = body.password;
         detail.password = "reset";
+        signOutUser(u.id);
+        enqueueMail("security.password_changed", u.email, { by: user.email });
       }
       audit(user, "user.update", "user", u.id, detail, ip);
       return { body: publicUser(u) };
@@ -1803,9 +1976,47 @@ export function createAdminMock(ctx) {
       if (u.id === user.id) throw conflict("you cannot delete yourself");
       if (u.role === "owner" && u.active && activeOwners().length <= 1) throw conflict("cannot delete the last owner");
       S.users = S.users.filter((x) => x.id !== u.id);
-      for (const [tok, s] of S.sessions) if (s.userId === u.id) S.sessions.delete(tok);
+      signOutUser(u.id);
       audit(user, "user.delete", "user", u.id, { email: u.email }, ip);
       return { status: 204 };
+    }
+    throw notFound("endpoint");
+  }
+
+  // ---- e-mail -------------------------------------------------------------------------------
+
+  function emailRoute(user, ip, method, url, a, id, action, body) {
+    if (a === "status" && method === "GET") return { body: { ...S.email } };
+    if (a === "test" && method === "POST") {
+      if (!S.email.configured) throw conflict("e-mail is not configured (set SMTP_HOST and SMTP_FROM)");
+      const to = body?.to === undefined || body.to === "" ? user.email : String(body.to).trim();
+      if (!isEmail(to)) throw bad("invalid request", { to: "must be a valid e-mail address" });
+      audit(user, "email.test", "email", "", { to }, ip);
+      if (/bounce|fail/i.test(to)) return { body: { ok: false, error: `550 5.1.1 <${to}>: Recipient address rejected` } };
+      return { body: { ok: true, error: "" } };
+    }
+    if (a !== "outbox") throw notFound("endpoint");
+    // Mail to other admins: owners and admins only.
+    if (user.role === "viewer") throw new HttpError(403, "forbidden", "the e-mail outbox is visible to owners and admins only");
+    if (!id && method === "GET") {
+      const status = url.searchParams.get("status") || "";
+      const kind = url.searchParams.get("kind") || "";
+      if (status && !["pending", "sent", "failed"].includes(status)) throw bad("invalid status", { status: "must be pending, sent or failed" });
+      let list = S.outbox;
+      if (status) list = list.filter((m) => m.status === status);
+      if (kind) list = list.filter((m) => m.kind === kind);
+      const page = paginate(list, url);
+      return { body: { ...page, items: page.items.map(publicEmail) } };
+    }
+    const m = S.outbox.find((x) => x.id === id);
+    if (!m) throw notFound("e-mail");
+    if (!action && method === "GET") return { body: { ...publicEmail(m), body_text: m.body_text } };
+    if (action === "retry" && method === "POST") {
+      if (m.status === "sent") throw conflict("the message was already sent");
+      m.status = "pending";
+      audit(user, "email.retry", "email", m.id, { kind: m.kind }, ip);
+      deliverLater(m);
+      return { body: publicEmail(m) };
     }
     throw notFound("endpoint");
   }
@@ -1824,6 +2035,7 @@ export function createAdminMock(ctx) {
   function printCredentials(base) {
     console.log(`\n  Admin console: ${base}/admin  (mock admin API under /api/admin)`);
     for (const u of MOCK_USERS) console.log(`    ${u.role.padEnd(7)} ${u.email.padEnd(24)} ${u.password}`);
+    console.log(`    e-mail: ${S?.email?.configured === false ? "not configured (MOCK_SMTP=off)" : "configured (mailpit), outbox at /admin/emails"}`);
     console.log("");
   }
 

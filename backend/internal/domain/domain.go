@@ -289,6 +289,31 @@ type AdminSession struct {
 	CreatedAt time.Time
 }
 
+type EmailStatus string
+
+const (
+	EmailPending EmailStatus = "pending"
+	EmailSent    EmailStatus = "sent"
+	EmailFailed  EmailStatus = "failed" // retries exhausted
+)
+
+// EmailMessage is an outbox row: one e-mail to one recipient.
+type EmailMessage struct {
+	ID            uuid.UUID
+	Kind          string // e.g. "security.new_login", "alert.webhook_failed"
+	DedupeKey     string // groups messages for throttling ("" = none)
+	To            string
+	Subject       string
+	BodyText      string
+	BodyHTML      string
+	Status        EmailStatus
+	Attempts      int
+	NextAttemptAt time.Time
+	LastError     string
+	SentAt        *time.Time
+	CreatedAt     time.Time
+}
+
 // Webhook event types sent to merchants.
 const (
 	EventPaymentDetected = "invoice.payment_detected"
@@ -348,7 +373,18 @@ type Settings struct {
 	WebhookTimeoutSeconds int    `json:"webhook_timeout_seconds"`
 	CheckoutBaseURL       string `json:"checkout_base_url"` // public origin of the checkout UI, e.g. https://pay.example.com
 	WalletConnectID       string `json:"walletconnect_project_id"`
+
+	SecurityEmails  bool     `json:"security_emails"`  // e-mail admins about security events on their account
+	AlertEmails     bool     `json:"alert_emails"`     // e-mail operational alerts
+	AlertRecipients []string `json:"alert_recipients"` // [] = every active owner
+	EmailLocale     string   `json:"email_locale"`     // "zh" | "en"
 }
+
+// E-mail languages (Settings.EmailLocale).
+const (
+	LocaleZH = "zh"
+	LocaleEN = "en"
+)
 
 func DefaultSettings() Settings {
 	return Settings{
@@ -360,5 +396,8 @@ func DefaultSettings() Settings {
 		WebhookMaxAttempts:    10,
 		WebhookTimeoutSeconds: 10,
 		CheckoutBaseURL:       "http://localhost:3000",
+		SecurityEmails:        true,
+		AlertRecipients:       []string{},
+		EmailLocale:           LocaleZH,
 	}
 }

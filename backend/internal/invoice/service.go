@@ -72,6 +72,13 @@
 // transfers and confirmation counters, ExpireDue closing quotes past
 // watch_until), so no lock cycle can form; a deadlock with the latter is
 // retried by store.WithTx.
+//
+// # Alerts
+//
+// An invoice that becomes underpaid is reported to the alert.Notifier given
+// to SetNotifier — only after the transaction that changed it committed
+// (Committed), so an alert can neither roll back nor delay the change, and
+// a rolled back change reports nothing.
 package invoice
 
 import (
@@ -83,6 +90,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"cryptopay/internal/alert"
 	"cryptopay/internal/domain"
 	"cryptopay/internal/rates"
 	"cryptopay/internal/store"
@@ -96,7 +104,8 @@ type Service struct {
 	log   *slog.Logger
 	now   func() time.Time
 
-	expireBatch int // invoices per ExpireDue transaction (tests lower it)
+	expireBatch int            // invoices per ExpireDue transaction (tests lower it)
+	notifier    alert.Notifier // nil = no alerts
 }
 
 // New returns a Service. logger nil → slog.Default(); now nil → time.Now.
@@ -119,6 +128,23 @@ func New(st *store.Store, rp rates.Provider, logger *slog.Logger, now func() tim
 }
 
 func (s *Service) clock() time.Time { return s.now().UTC().Truncate(time.Microsecond) }
+
+// SetNotifier sets where operational alerts go (nil = nowhere). Call it
+// before the service is used. n must not block (use an alert.Queue).
+func (s *Service) SetNotifier(n alert.Notifier) { s.notifier = n }
+
+// Committed reports the alert-worthy outcomes of evaluations whose
+// transaction has committed: an invoice that just became underpaid. Call it
+// after store.WithTx returned nil for every Evaluation obtained inside it.
+// It never blocks on, fails or panics into the caller.
+func (s *Service) Committed(ctx context.Context, evs ...Evaluation) {
+	for _, ev := range evs {
+		if ev.StatusChanged && ev.Invoice.Status == domain.InvoiceUnderpaid {
+			inv := ev.Invoice
+			alert.Notify(s.notifier, s.log, func(n alert.Notifier) { n.InvoiceUnderpaid(ctx, inv) })
+		}
+	}
+}
 
 // Details is an invoice with everything recorded for it.
 type Details struct {

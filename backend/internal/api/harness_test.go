@@ -22,6 +22,8 @@ import (
 	"cryptopay/internal/domain"
 	"cryptopay/internal/invoice"
 	"cryptopay/internal/invoice/invoicetest"
+	"cryptopay/internal/mailer"
+	"cryptopay/internal/notify"
 	"cryptopay/internal/store"
 	"cryptopay/internal/store/storetest"
 )
@@ -65,19 +67,33 @@ func (f *fakeRegistry) Invalidated() []string {
 // real router.
 type harness struct {
 	*invoicetest.Env
-	t        *testing.T
-	api      *API
-	handler  http.Handler
-	reg      *fakeRegistry
-	kicks    atomic.Int32
-	changed  chan string
-	MerchKey string // plaintext API key of Env.Merchant
+	t          *testing.T
+	api        *API
+	handler    http.Handler
+	reg        *fakeRegistry
+	kicks      atomic.Int32
+	emailKicks atomic.Int32
+	changed    chan string
+	MerchKey   string // plaintext API key of Env.Merchant
+	// Mail records the test e-mails sent through Deps.Mailer (withEmail).
+	Mail *mailer.Recorder
 }
 
 type harnessOpt func(*Deps)
 
 func withLimits(l Limits) harnessOpt               { return func(d *Deps) { d.Limits = l } }
 func withConfig(f func(*config.Config)) harnessOpt { return func(d *Deps) { f(&d.Config) } }
+
+// withEmail configures e-mail: SMTP settings, the notifier (enqueues into
+// the outbox) and a recording sender for the test e-mail.
+func withEmail() harnessOpt {
+	return func(d *Deps) {
+		d.Config.SMTP = config.SMTPConfig{Host: "smtp.test.example", Port: 587, Username: "mailer", Password: "smtp-secret-pw",
+			From: "CryptoPay <no-reply@cryptopay.test>", TLS: config.SMTPStartTLS}
+		d.Notifier = notify.New(d.Store, true, d.Logger, d.Now)
+		d.Mailer = &mailer.Recorder{}
+	}
+}
 
 // generousLimits keep rate limiting out of the way of functional tests (the
 // harness clock is fixed, so buckets never refill).
@@ -88,6 +104,7 @@ var generousLimits = Limits{
 	LoginIP:       Limit{Rate: 1000, Burst: 10_000},
 	LoginFailures: 5,
 	LoginWindow:   15 * time.Minute,
+	EmailTest:     Limit{Rate: 1000, Burst: 10_000},
 }
 
 func newHarness(t *testing.T, opts ...harnessOpt) *harness {
@@ -102,10 +119,14 @@ func newHarness(t *testing.T, opts ...harnessOpt) *harness {
 		Hooks: Hooks{
 			WebhookKick:  func() { h.kicks.Add(1) },
 			ChainChanged: func(id string) { h.changed <- id },
+			EmailKick:    func() { h.emailKicks.Add(1) },
 		},
 	}
 	for _, o := range opts {
 		o(&d)
+	}
+	if rec, ok := d.Mailer.(*mailer.Recorder); ok {
+		h.Mail = rec
 	}
 	h.api = newAPI(d)
 	h.handler = h.api.Routes()
@@ -302,3 +323,32 @@ func mustUUID(t *testing.T, s any) uuid.UUID {
 }
 
 var errProbe = errors.New("dial tcp: lookup https://rpc.example/v2/SECRETKEY: no such host")
+
+// ---- sign-in and e-mail helpers ----
+
+// login posts e-mail and password (CSRF header set).
+func (h *harness) login(email, password string, opts ...reqOpt) *response {
+	h.t.Helper()
+	return h.do(http.MethodPost, "/api/admin/auth/login", map[string]any{"email": email, "password": password},
+		append([]reqOpt{csrfHeader()}, opts...)...)
+}
+
+// emails returns the outbox messages of a kind, newest first.
+func (h *harness) emails(kind string) []domain.EmailMessage {
+	h.t.Helper()
+	p, err := h.Store.ListEmails(h.Ctx, store.EmailFilter{Kind: kind, PageSize: store.MaxPageSize})
+	require.NoError(h.t, err)
+	return p.Items
+}
+
+// allEmailText concatenates every outbox message (for secret scans).
+func (h *harness) allEmailText() string {
+	h.t.Helper()
+	p, err := h.Store.ListEmails(h.Ctx, store.EmailFilter{PageSize: store.MaxPageSize})
+	require.NoError(h.t, err)
+	var b strings.Builder
+	for _, e := range p.Items {
+		b.WriteString(e.Subject + "\n" + e.BodyText + "\n" + e.BodyHTML + "\n")
+	}
+	return b.String()
+}

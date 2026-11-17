@@ -147,6 +147,10 @@ describe("endpoint modules", () => {
       webhook_timeout_seconds: 10,
       checkout_base_url: "https://pay.example",
       walletconnect_project_id: "",
+      security_emails: true,
+      alert_emails: true,
+      alert_recipients: ["ops@example.com"],
+      email_locale: "en",
     });
     await api.listTransfers({ matched: false });
     await api.setMerchantWallet("m1", "tron-nile", { wallet_id: "w1" });
@@ -165,6 +169,28 @@ describe("endpoint modules", () => {
     expect(calls[2].headers["X-Requested-With"]).toBe("cryptopay");
     expect(calls[6].body).toBe('{"wallet_id":"w1"}');
     expect(calls[7].headers["X-Requested-With"]).toBe("cryptopay");
+  });
+
+  it("admin: e-mail endpoints", async () => {
+    const { calls, client } = recorder();
+    const api = createAdminApi(client);
+    await api.getEmailStatus();
+    await api.sendTestEmail();
+    await api.sendTestEmail({ to: "a@b.c" });
+    await api.listEmailOutbox({ status: "failed", kind: "alert.webhook_failed", page: 2 });
+    await api.getEmailMessage("e1");
+    await api.retryEmailMessage("e1");
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      "GET /api/admin/email/status",
+      "POST /api/admin/email/test",
+      "POST /api/admin/email/test",
+      "GET /api/admin/email/outbox?status=failed&kind=alert.webhook_failed&page=2",
+      "GET /api/admin/email/outbox/e1",
+      "POST /api/admin/email/outbox/e1/retry",
+    ]);
+    expect(calls[1].body).toBe("{}");
+    expect(calls[2].body).toBe('{"to":"a@b.c"}');
+    for (const c of calls.filter((x) => x.method !== "GET")) expect(c.headers["X-Requested-With"]).toBe("cryptopay");
   });
 
   it("merchant: bearer auth on every request", async () => {

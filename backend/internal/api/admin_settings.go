@@ -15,6 +15,7 @@ import (
 	"cryptopay/internal/auth"
 	"cryptopay/internal/domain"
 	"cryptopay/internal/invoice"
+	"cryptopay/internal/notify"
 	"cryptopay/internal/store"
 )
 
@@ -29,6 +30,7 @@ const (
 	maxWebhookTimeoutSecs  = 60
 	maxWalletConnectIDLen  = 128
 	maxCheckoutBaseURLSize = 512
+	maxAlertRecipients     = 10
 )
 
 var walletConnectIDRE = regexp.MustCompile(`^[A-Za-z0-9_-]*$`)
@@ -45,15 +47,19 @@ func (a *API) adminGetSettings(w http.ResponseWriter, r *http.Request) {
 func (a *API) adminPutSettings(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var body struct {
-		InvoiceTTLSeconds      *int    `json:"invoice_ttl_seconds"`
-		GracePeriodSeconds     *int    `json:"grace_period_seconds"`
-		UnderpayToleranceBps   *int    `json:"underpay_tolerance_bps"`
-		StablecoinPeg          *bool   `json:"stablecoin_peg"`
-		RateMarkupBps          *int    `json:"rate_markup_bps"`
-		WebhookMaxAttempts     *int    `json:"webhook_max_attempts"`
-		WebhookTimeoutSeconds  *int    `json:"webhook_timeout_seconds"`
-		CheckoutBaseURL        *string `json:"checkout_base_url"`
-		WalletConnectProjectID *string `json:"walletconnect_project_id"`
+		InvoiceTTLSeconds      *int      `json:"invoice_ttl_seconds"`
+		GracePeriodSeconds     *int      `json:"grace_period_seconds"`
+		UnderpayToleranceBps   *int      `json:"underpay_tolerance_bps"`
+		StablecoinPeg          *bool     `json:"stablecoin_peg"`
+		RateMarkupBps          *int      `json:"rate_markup_bps"`
+		WebhookMaxAttempts     *int      `json:"webhook_max_attempts"`
+		WebhookTimeoutSeconds  *int      `json:"webhook_timeout_seconds"`
+		CheckoutBaseURL        *string   `json:"checkout_base_url"`
+		WalletConnectProjectID *string   `json:"walletconnect_project_id"`
+		SecurityEmails         *bool     `json:"security_emails"`
+		AlertEmails            *bool     `json:"alert_emails"`
+		AlertRecipients        *[]string `json:"alert_recipients"`
+		EmailLocale            *string   `json:"email_locale"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		a.fail(w, r, err)
@@ -98,6 +104,24 @@ func (a *API) adminPutSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		next.WalletConnectID = id
 	}
+	boolField := func(field string, v *bool) bool {
+		if v == nil {
+			f.add(field, "is required")
+			return false
+		}
+		return *v
+	}
+	next.SecurityEmails = boolField("security_emails", body.SecurityEmails)
+	next.AlertEmails = boolField("alert_emails", body.AlertEmails)
+	next.AlertRecipients = checkRecipients(f, body.AlertRecipients)
+	switch {
+	case body.EmailLocale == nil:
+		f.add("email_locale", "is required")
+	case *body.EmailLocale != domain.LocaleZH && *body.EmailLocale != domain.LocaleEN:
+		f.add("email_locale", "must be zh or en")
+	default:
+		next.EmailLocale = *body.EmailLocale
+	}
 	if err := f.err(); err != nil {
 		a.fail(w, r, err)
 		return
@@ -136,6 +160,37 @@ func httpOrigin(raw string) (string, bool) {
 	return u.Scheme + "://" + u.Host, true
 }
 
+// checkRecipients validates the alert recipient list: at most
+// maxAlertRecipients distinct valid addresses (compared case-insensitively).
+func checkRecipients(f fields, v *[]string) []string {
+	const field = "alert_recipients"
+	if v == nil {
+		f.add(field, "is required ([] for every active owner)")
+		return []string{}
+	}
+	out := make([]string, 0, len(*v))
+	seen := map[string]bool{}
+	if len(*v) > maxAlertRecipients {
+		f.add(field, fmt.Sprintf("at most %d addresses", maxAlertRecipients))
+		return out
+	}
+	for _, raw := range *v {
+		e := strings.TrimSpace(raw)
+		a, err := mail.ParseAddress(e)
+		if e == "" || len(e) > maxEmailLen || err != nil || a.Address != e {
+			f.add(field, fmt.Sprintf("%q is not a valid e-mail address", raw))
+			continue
+		}
+		if seen[strings.ToLower(e)] {
+			f.add(field, fmt.Sprintf("%q is listed twice", e))
+			continue
+		}
+		seen[strings.ToLower(e)] = true
+		out = append(out, e)
+	}
+	return out
+}
+
 // settingsDiff lists the changed settings as {field: {from, to}}.
 func settingsDiff(prev, next domain.Settings) map[string]any {
 	out := map[string]any{}
@@ -144,7 +199,7 @@ func settingsDiff(prev, next domain.Settings) map[string]any {
 	for i := range t.NumField() {
 		name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
 		a, b := pv.Field(i).Interface(), nv.Field(i).Interface()
-		if a != b {
+		if !reflect.DeepEqual(a, b) {
 			out[name] = map[string]any{"from": a, "to": b}
 		}
 	}
@@ -215,8 +270,13 @@ func (a *API) adminCreateUser(w http.ResponseWriter, r *http.Request) {
 		if u, err = tx.CreateAdminUser(ctx, domain.AdminUser{Email: email, PasswordHash: hash, Role: role, Active: true}); err != nil {
 			return err
 		}
-		return a.audit(ctx, tx, nil, auditEntry{Action: "user.create", TargetType: "admin_user", TargetID: u.ID.String(),
-			Detail: map[string]any{"email": email, "role": string(role)}})
+		if err := a.audit(ctx, tx, nil, auditEntry{Action: "user.create", TargetType: "admin_user", TargetID: u.ID.String(),
+			Detail: map[string]any{"email": email, "role": string(role)}}); err != nil {
+			return err
+		}
+		ad, _ := adminFrom(ctx)
+		a.notifySecurity(ctx, tx, u, notify.Event{Kind: notify.KindAccountCreated, Actor: ad.User.Email, Role: role})
+		return nil
 	})
 	if store.IsConstraint(err, store.ConstraintAdminUserEmail) {
 		a.fail(w, r, &Error{Status: http.StatusConflict, Code: CodeConflict, Message: "a user with this e-mail already exists",
@@ -313,7 +373,31 @@ func (a *API) adminUpdateUser(w http.ResponseWriter, r *http.Request) {
 			detail["sessions_revoked"] = n
 		}
 		detail["email"] = cur.Email
-		return a.audit(ctx, tx, nil, auditEntry{Action: "user.update", TargetType: "admin_user", TargetID: id.String(), Detail: detail})
+		if err := a.audit(ctx, tx, nil, auditEntry{Action: "user.update", TargetType: "admin_user", TargetID: id.String(), Detail: detail}); err != nil {
+			return err
+		}
+		// Tell the user (not when owners change their own account).
+		if id != ad.User.ID {
+			ev := notify.Event{Actor: ad.User.Email}
+			if upd.PasswordHash != nil {
+				ev.Kind = notify.KindPasswordChanged
+				a.notifySecurity(ctx, tx, out, ev)
+			}
+			if upd.Role != nil && *upd.Role != cur.Role {
+				ev.Kind, ev.Role = notify.KindRoleChanged, *upd.Role
+				a.notifySecurity(ctx, tx, out, ev)
+			}
+			if upd.Active != nil && *upd.Active != cur.Active {
+				ev.Kind = notify.KindAccountReactivated
+				if !*upd.Active {
+					ev.Kind = notify.KindAccountDeactivated
+				}
+				a.notifySecurity(ctx, tx, out, ev)
+			}
+		} else if upd.PasswordHash != nil {
+			a.notifySecurity(ctx, tx, out, notify.Event{Kind: notify.KindPasswordChanged})
+		}
+		return nil
 	})
 	if err != nil {
 		a.fail(w, r, err)

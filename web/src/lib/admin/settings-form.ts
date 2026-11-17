@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { bpsToPercent, formatDuration, joinDuration, percentToBps, splitDuration, type DurationUnit } from "@/lib/format/units";
-import type { Settings } from "@/lib/api/types";
+import type { EmailLocale, Settings } from "@/lib/api/types";
 import type { Locale } from "@/lib/i18n/config";
 import type { TranslateFn } from "@/lib/i18n/types";
 
@@ -21,7 +21,21 @@ export interface SettingsFormValues {
   webhook_timeout_seconds: string;
   checkout_base_url: string;
   walletconnect_project_id: string;
+  security_emails: boolean;
+  alert_emails: boolean;
+  alert_recipients: string[];
+  email_locale: EmailLocale;
 }
+
+/** `alert_recipients` holds at most this many addresses (docs/api.md). */
+export const MAX_ALERT_RECIPIENTS = 10;
+
+/** Same shape check as the rest of the console (the server validates strictly). */
+export function isEmailAddress(v: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v) && v.length <= 254;
+}
+
+export const EMAIL_LOCALES: readonly EmailLocale[] = ["zh", "en"];
 
 export const LIMITS = {
   invoice_ttl_seconds: [60, 86_400],
@@ -49,6 +63,10 @@ export function settingsToForm(s: Settings): SettingsFormValues {
     webhook_timeout_seconds: String(s.webhook_timeout_seconds),
     checkout_base_url: s.checkout_base_url,
     walletconnect_project_id: s.walletconnect_project_id,
+    security_emails: s.security_emails,
+    alert_emails: s.alert_emails,
+    alert_recipients: [...(s.alert_recipients ?? [])],
+    email_locale: s.email_locale,
   };
 }
 
@@ -68,6 +86,10 @@ export function formToSettings(v: SettingsFormValues): Settings {
     webhook_timeout_seconds: Number(v.webhook_timeout_seconds),
     checkout_base_url: v.checkout_base_url.trim().replace(/\/+$/, ""),
     walletconnect_project_id: v.walletconnect_project_id.trim(),
+    security_emails: v.security_emails,
+    alert_emails: v.alert_emails,
+    alert_recipients: v.alert_recipients.map((r) => r.trim()).filter(Boolean),
+    email_locale: v.email_locale,
   };
 }
 
@@ -82,7 +104,23 @@ export const SETTINGS_FIELD_MAP: Record<keyof Settings, keyof SettingsFormValues
   webhook_timeout_seconds: "webhook_timeout_seconds",
   checkout_base_url: "checkout_base_url",
   walletconnect_project_id: "walletconnect_project_id",
+  security_emails: "security_emails",
+  alert_emails: "alert_emails",
+  alert_recipients: "alert_recipients",
+  email_locale: "email_locale",
 };
+
+/**
+ * Why `address` can't be added to the recipient list (null = it can).
+ * Duplicates are compared case-insensitively.
+ */
+export function recipientProblem(t: TranslateFn, list: readonly string[], address: string): string | null {
+  const v = address.trim();
+  if (!isEmailAddress(v)) return t("admin.settings.validation.email");
+  if (list.some((r) => r.toLowerCase() === v.toLowerCase())) return t("admin.settings.validation.duplicateEmail");
+  if (list.length >= MAX_ALERT_RECIPIENTS) return t("admin.settings.validation.tooManyRecipients", { max: MAX_ALERT_RECIPIENTS });
+  return null;
+}
 
 export function settingsSchema(t: TranslateFn, locale: Locale = "en") {
   const unit = z.enum(["seconds", "minutes", "hours"]);
@@ -128,6 +166,27 @@ export function settingsSchema(t: TranslateFn, locale: Locale = "en") {
           }
         }, t("admin.settings.validation.url")),
       walletconnect_project_id: z.string().trim().max(128),
+      security_emails: z.boolean(),
+      alert_emails: z.boolean(),
+      alert_recipients: z
+        .array(z.string())
+        .max(MAX_ALERT_RECIPIENTS, t("admin.settings.validation.tooManyRecipients", { max: MAX_ALERT_RECIPIENTS }))
+        .superRefine((list, ctx) => {
+          const seen = new Set<string>();
+          for (const r of list) {
+            const v = r.trim();
+            if (!isEmailAddress(v)) {
+              ctx.addIssue({ code: "custom", message: t("admin.settings.validation.email") });
+              return;
+            }
+            if (seen.has(v.toLowerCase())) {
+              ctx.addIssue({ code: "custom", message: t("admin.settings.validation.duplicateEmail") });
+              return;
+            }
+            seen.add(v.toLowerCase());
+          }
+        }),
+      email_locale: z.enum(["zh", "en"]),
     })
     .superRefine((v, ctx) => {
       const check = (field: "invoice_ttl" | "grace_period", u: DurationUnit, [min, max]: readonly [number, number]) => {

@@ -235,8 +235,10 @@ func TestServeLifecycle(t *testing.T) {
 	env["LOG_LEVEL"] = "info"
 	env["ADMIN_EMAIL"] = "boot@example.com"
 	env["ADMIN_PASSWORD"] = "bootstrap-pass-1"
-	env["COINGECKO_BASE_URL"] = "http://127.0.0.1:1" // no network in tests
-	env["SCANNER_ENABLED"] = "true"                  // no chain has a wallet: nothing is scanned
+	env["COINGECKO_BASE_URL"] = "http://127.0.0.1:1"                               // no network in tests
+	env["SCANNER_ENABLED"] = "true"                                                // no chain has a wallet: nothing is scanned
+	env["SMTP_HOST"], env["SMTP_PORT"], env["SMTP_TLS"] = "127.0.0.1", "1", "none" // nothing is mailed in this test
+	env["SMTP_FROM"], env["SMTP_USERNAME"], env["SMTP_PASSWORD"] = "CryptoPay <no-reply@cryptopay.local>", "mailer", "smtp-pass-xyz"
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -276,8 +278,9 @@ func TestServeLifecycle(t *testing.T) {
 	}
 	logs := out.String()
 	assert.Contains(t, logs, `"msg":"listening"`)
+	assert.Contains(t, logs, `"msg":"e-mail enabled"`)
 	assert.Contains(t, logs, `"msg":"stopped"`)
-	for _, s := range []string{testSecret, "bootstrap-pass-1"} {
+	for _, s := range []string{testSecret, "bootstrap-pass-1", "smtp-pass-xyz"} {
 		assert.NotContains(t, logs, s, "secrets never reach the log")
 	}
 

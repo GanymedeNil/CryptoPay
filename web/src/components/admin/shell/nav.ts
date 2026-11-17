@@ -2,6 +2,7 @@ import {
   ArrowLeftRightIcon,
   CoinsIcon,
   LayoutDashboardIcon,
+  MailIcon,
   NetworkIcon,
   ReceiptTextIcon,
   ScrollTextIcon,
@@ -19,6 +20,8 @@ export interface NavItem {
   label: MessageKey;
   icon: LucideIcon;
   ownerOnly?: boolean;
+  /** Hidden for viewers (owner / admin only). */
+  writersOnly?: boolean;
 }
 
 export interface NavGroup {
@@ -53,6 +56,7 @@ export const NAV: NavGroup[] = [
     label: "admin.nav.groupAdmin",
     items: [
       { href: "/admin/users", label: "admin.nav.users", icon: UsersIcon, ownerOnly: true },
+      { href: "/admin/emails", label: "admin.nav.emails", icon: MailIcon, writersOnly: true },
       { href: "/admin/audit-logs", label: "admin.nav.auditLogs", icon: ScrollTextIcon },
     ],
   },

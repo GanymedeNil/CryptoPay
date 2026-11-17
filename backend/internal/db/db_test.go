@@ -106,11 +106,11 @@ func TestOpenAndMigrate(t *testing.T) {
 
 	applied, err := Migrate(ctx, pool)
 	require.NoError(t, err)
-	assert.Equal(t, []int64{1, 2, 3}, applied)
+	assert.Equal(t, []int64{1, 2, 3, 4}, applied)
 
 	v, err = Version(ctx, pool)
 	require.NoError(t, err)
-	assert.EqualValues(t, 3, v)
+	assert.EqualValues(t, 4, v)
 	pending, err = HasPending(ctx, pool)
 	require.NoError(t, err)
 	assert.False(t, pending)
@@ -160,14 +160,14 @@ func TestMigrateConcurrent(t *testing.T) {
 	defer pool.Close()
 	v, err := Version(ctx, pool)
 	require.NoError(t, err)
-	assert.EqualValues(t, 3, v)
+	assert.EqualValues(t, 4, v)
 }
 
 func TestMigrateURL(t *testing.T) {
 	u := testSchemaURL(t)
 	applied, err := MigrateURL(context.Background(), u, WithoutLock())
 	require.NoError(t, err)
-	assert.Len(t, applied, 3)
+	assert.Len(t, applied, 4)
 }
 
 func TestLockIDStable(t *testing.T) {
@@ -261,4 +261,50 @@ func TestMigrationRefusesCrossFamilyXpub(t *testing.T) {
 	v, err := Version(ctx, pool)
 	require.NoError(t, err)
 	assert.EqualValues(t, 2, v, "nothing of 00003 applied")
+}
+
+// TestMigrationAdminSecurity: 00004 applies to a database that already has
+// admin users and sessions, which keep working; the e-mail outbox has the
+// expected constraints.
+func TestMigrationAdminSecurity(t *testing.T) {
+	ctx := context.Background()
+	pool, err := Open(ctx, testSchemaURL(t))
+	require.NoError(t, err)
+	defer pool.Close()
+	require.NoError(t, migrateTo(t, pool, 3))
+
+	const owner = "00000000-0000-0000-0000-0000000000a1"
+	_, err = pool.Exec(ctx, `
+		INSERT INTO admin_users (id, email, password_hash, role, active, last_login_at) VALUES
+			('`+owner+`', 'owner@example.com', '$2a$10$hash', 'owner', true, now());
+		INSERT INTO admin_sessions (id, user_id, token_hash, ip, user_agent, expires_at) VALUES
+			(gen_random_uuid(), '`+owner+`', 'hash-1', '192.0.2.1', 'ua', now() + interval '1 day');
+		INSERT INTO audit_logs (actor_email, action, target_type, target_id, ip) VALUES
+			('owner@example.com', 'auth.login', 'admin_user', '`+owner+`', '192.0.2.1');`)
+	require.NoError(t, err)
+
+	require.NoError(t, migrateTo(t, pool, 4))
+
+	var sessions int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM admin_sessions`).Scan(&sessions))
+	assert.Equal(t, 1, sessions, "sessions survive")
+
+	// The outbox accepts only the three statuses.
+	_, err = pool.Exec(ctx, `INSERT INTO email_outbox (id, kind, to_address, subject, body_text, status) VALUES (gen_random_uuid(), 'k', 'a@b', 's', 'b', 'bounced')`)
+	require.ErrorContains(t, err, "email_outbox_status_check")
+	_, err = pool.Exec(ctx, `INSERT INTO email_outbox (id, kind, to_address, subject, body_text) VALUES (gen_random_uuid(), 'k', 'a@b', 's', 'b')`)
+	require.NoError(t, err)
+
+	// Down and up again.
+	provider, sqlDB, err := newProvider(ctx, pool, newMigrateConfig([]MigrateOption{WithoutLock()}))
+	require.NoError(t, err)
+	defer sqlDB.Close()
+	_, err = provider.DownTo(ctx, 3)
+	require.NoError(t, err)
+	var exists bool
+	require.NoError(t, pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema()
+		AND table_name = 'email_outbox')`).Scan(&exists))
+	assert.False(t, exists)
+	_, err = provider.UpTo(ctx, 4)
+	require.NoError(t, err)
 }

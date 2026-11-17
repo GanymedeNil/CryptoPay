@@ -20,12 +20,13 @@ import {
 } from "@/lib/admin/settings-form";
 import { formatDuration, joinDuration, type DurationUnit } from "@/lib/format/units";
 import { adminApi } from "@/lib/api/admin";
-import type { Settings } from "@/lib/api/types";
+import type { EmailLocale, Settings } from "@/lib/api/types";
 import { useLocale, useT } from "@/lib/i18n";
 import { useCanWrite } from "../auth";
 import { describedBy, FormError, FormField } from "../form-field";
 import { PageHeader, Section } from "../page-header";
 import { ErrorState } from "../states";
+import { EmailStatusPanel, RecipientsEditor, TestEmailPanel } from "./email-settings";
 
 export function SettingsPage() {
   const t = useT();
@@ -150,6 +151,51 @@ export function SettingsForm({ settings }: { settings: Settings }) {
     );
   };
 
+  const toggleField = (
+    field: "security_emails" | "alert_emails",
+    label: string,
+    hint: string,
+    extra?: React.ReactNode,
+  ) => (
+    <Controller
+      control={form.control}
+      name={field}
+      render={({ field: f }) => {
+        const err = errors[field]?.message;
+        return (
+          <div className="space-y-2 rounded-lg border p-3" data-invalid={!!err || undefined}>
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-0.5">
+                <label htmlFor={id(field)} className="text-sm font-medium">
+                  {label}
+                </label>
+                <p id={`${id(field)}-desc`} className="text-xs text-pretty text-muted-foreground">
+                  {hint}
+                </p>
+              </div>
+              <Switch
+                id={id(field)}
+                checked={f.value}
+                onCheckedChange={(v) => {
+                  f.onChange(v);
+                  form.clearErrors(field);
+                }}
+                aria-invalid={!!err || undefined}
+                aria-describedby={[`${id(field)}-desc`, err ? `${id(field)}-err` : null].filter(Boolean).join(" ")}
+              />
+            </div>
+            {extra}
+            {err && (
+              <p id={`${id(field)}-err`} role="alert" className="text-sm text-destructive">
+                {err}
+              </p>
+            )}
+          </div>
+        );
+      }}
+    />
+  );
+
   return (
     <form
       noValidate
@@ -247,6 +293,62 @@ export function SettingsForm({ settings }: { settings: Settings }) {
                 {...form.register("walletconnect_project_id")}
               />
             </FormField>
+          </div>
+        </Section>
+
+        <Section title={t("admin.settings.sections.email")} description={t("admin.settings.sections.emailDescription")}>
+          <div className="space-y-5">
+            <EmailStatusPanel />
+            <div className="grid gap-5 lg:grid-cols-2">
+              {toggleField("security_emails", t("admin.settings.fields.securityEmails"), t("admin.settings.fields.securityEmailsHint"))}
+              {toggleField("alert_emails", t("admin.settings.fields.alertEmails"), t("admin.settings.fields.alertEmailsHint"))}
+            </div>
+            <FormField
+              label={t("admin.settings.fields.alertRecipients")}
+              htmlFor={id("recipients")}
+              description={t("admin.settings.fields.alertRecipientsHint")}
+            >
+              <Controller
+                control={form.control}
+                name="alert_recipients"
+                render={({ field }) => (
+                  <RecipientsEditor
+                    id={id("recipients")}
+                    value={field.value}
+                    onChange={(next) => {
+                      field.onChange(next);
+                      form.clearErrors("alert_recipients");
+                    }}
+                    error={errors.alert_recipients?.message ?? errors.alert_recipients?.root?.message}
+                    disabled={!canWrite}
+                  />
+                )}
+              />
+            </FormField>
+            <FormField label={t("admin.settings.fields.emailLocale")} htmlFor={id("locale")} description={t("admin.settings.fields.emailLocaleHint")}>
+              <Controller
+                control={form.control}
+                name="email_locale"
+                render={({ field }) => (
+                  // A wrapper keeps the trigger narrow (vertical fields stretch their children).
+                  <div>
+                    <Select value={field.value} onValueChange={(v) => field.onChange(v as EmailLocale)}>
+                      <SelectTrigger id={id("locale")} className="w-40" aria-describedby={`${id("locale")}-desc`}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(["zh", "en"] as const).map((l) => (
+                          <SelectItem key={l} value={l}>
+                            {t(`admin.settings.locales.${l}`)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              />
+            </FormField>
+            <TestEmailPanel />
           </div>
         </Section>
 

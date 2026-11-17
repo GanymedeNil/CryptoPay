@@ -19,8 +19,8 @@ import (
 
 // tsType is a parsed TypeScript type expression.
 type tsType struct {
-	kind   string    // "union", "array", "object", "ref", "prim", "lit", "record", "page"
-	alts   []*tsType // union
+	kind   string    // "union", "intersection", "array", "object", "ref", "prim", "lit", "record", "page"
+	alts   []*tsType // union, intersection
 	elem   *tsType   // array, page
 	fields []tsField // object
 	name   string    // ref name, prim name
@@ -225,6 +225,17 @@ func parseTSType(s string) (*tsType, error) {
 		}
 		return u, nil
 	}
+	if parts := splitTop(s, "&"); len(parts) > 1 {
+		x := &tsType{kind: "intersection"}
+		for _, p := range parts {
+			t, err := parseTSType(p)
+			if err != nil {
+				return nil, err
+			}
+			x.alts = append(x.alts, t)
+		}
+		return x, nil
+	}
 	switch {
 	case strings.HasSuffix(s, "[]"):
 		e, err := parseTSType(s[:len(s)-2])
@@ -252,6 +263,8 @@ func parseTSType(s string) (*tsType, error) {
 var (
 	sectionRE = regexp.MustCompile("(?m)^## \\d+\\. .*?`(/api/[a-z0-9/]+)`")
 	statusRE  = regexp.MustCompile(`^(\d{3})\s*(.*)$`)
+	// routeCellRE matches the first cell of an endpoint row.
+	routeCellRE = regexp.MustCompile(`^(GET|POST|PUT|PATCH|DELETE) /`)
 )
 
 // parseRoutes reads the endpoint tables: | `METHOD path` | body | response |.
@@ -270,6 +283,9 @@ func (d *contractDoc) parseRoutes(md string) error {
 			continue
 		}
 		route := firstCode(cells[0])
+		if !routeCellRE.MatchString(route) {
+			continue // another table (e.g. the e-mail kinds)
+		}
 		method, path, ok := strings.Cut(route, " ")
 		if !ok {
 			return fmt.Errorf("bad route cell %q", cells[0])
@@ -366,6 +382,21 @@ func (d *contractDoc) fieldsOf(name string) ([]tsField, bool) {
 	return append(out, it.Fields...), true
 }
 
+// objectFields returns the members of an object type expression (an inline
+// object or a reference to an interface / object alias).
+func (d *contractDoc) objectFields(t *tsType) ([]tsField, bool) {
+	switch t.kind {
+	case "object":
+		return t.fields, true
+	case "ref":
+		if a, ok := d.aliases[t.name]; ok {
+			return d.objectFields(a)
+		}
+		return d.fieldsOf(t.name)
+	}
+	return nil, false
+}
+
 // check validates JSON value v (as decoded into any) against t and returns
 // every mismatch, each prefixed with its JSON path.
 func (d *contractDoc) check(path string, v any, t *tsType) []string {
@@ -416,6 +447,18 @@ func (d *contractDoc) check(path string, v any, t *tsType) []string {
 			return []string{fmt.Sprintf("%s: want %q, got %v", path, t.lit, v)}
 		}
 		return nil
+	case "intersection":
+		// Every part must be an object type; the value has exactly the
+		// union of their members.
+		var all []tsField
+		for _, part := range t.alts {
+			f, ok := d.objectFields(part)
+			if !ok {
+				return []string{fmt.Sprintf("%s: intersection part is not an object type", path)}
+			}
+			all = append(all, f...)
+		}
+		return d.checkObject(path, v, all)
 	case "record":
 		if _, ok := v.(map[string]any); !ok {
 			return []string{fmt.Sprintf("%s: want object, got %s", path, jsonKindOf(v))}
@@ -508,12 +551,13 @@ func TestContractDocParses(t *testing.T) {
 	doc := loadContract(t)
 	for _, name := range []string{"Invoice", "Quote", "Transfer", "AssetInfo", "CreateInvoice", "CheckoutView",
 		"CheckoutAsset", "AdminUser", "Merchant", "ApiKey", "Wallet", "MerchantWallet", "Chain", "Asset", "InvoiceDetail",
-		"AdminInvoice", "WebhookEvent", "AuditLog", "Settings", "Overview"} {
+		"AdminInvoice", "WebhookEvent", "AuditLog", "Settings", "Overview", "EmailMessage"} {
 		_, ok := doc.fieldsOf(name)
 		require.True(t, ok, "interface %s", name)
 	}
 	require.Contains(t, doc.aliases, "InvoiceStatus")
-	require.Len(t, doc.routes, 5+2+41, "every endpoint row is parsed")
+	require.Len(t, doc.routes, 5+2+46, "every endpoint row is parsed")
+	require.Equal(t, "intersection", doc.routes["GET /api/admin/email/outbox/{id}"].Type.kind)
 	r := doc.routes["POST /api/admin/merchants"]
 	require.Equal(t, 201, r.Status)
 	require.Equal(t, "object", r.Type.kind)
@@ -535,4 +579,14 @@ func TestContractDocParses(t *testing.T) {
 	bad["family"] = "bitcoin"
 	errs := doc.check("$", bad, &tsType{kind: "ref", name: "AssetInfo"})
 	require.Len(t, errs, 4, "%v", errs)
+
+	// Intersections.
+	me, err := parseTSType("AssetInfo & { extra: boolean }")
+	require.NoError(t, err)
+	withExtra := map[string]any{"extra": true}
+	for k, v := range asset {
+		withExtra[k] = v
+	}
+	require.Empty(t, doc.check("$", withExtra, me))
+	require.Len(t, doc.check("$", asset, me), 1, "missing intersection member")
 }

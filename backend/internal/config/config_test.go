@@ -17,7 +17,8 @@ func clearEnv(t *testing.T) {
 	for _, k := range []string{
 		"DATABASE_URL", "APP_SECRET", "HTTP_ADDR", "APP_ENV", "LOG_LEVEL",
 		"COINGECKO_API_KEY", "COINGECKO_PRO", "COINGECKO_BASE_URL", "ADMIN_EMAIL", "ADMIN_PASSWORD",
-		"CORS_ORIGINS", "TRUST_PROXY_HEADERS", "TRUSTED_PROXIES", "SCANNER_ENABLED",
+		"CORS_ORIGINS", "TRUST_PROXY_HEADERS", "TRUSTED_PROXIES", "SCANNER_ENABLED", "WEBHOOK_ALLOW_PRIVATE",
+		"SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM", "SMTP_TLS",
 	} {
 		t.Setenv(k, "")
 	}
@@ -49,6 +50,53 @@ func TestLoadDefaults(t *testing.T) {
 	assert.Empty(t, c.TrustedProxies)
 	assert.True(t, c.ScannerEnabled)
 	assert.True(t, c.WebhookAllowPrivate, "development allows private webhook targets by default")
+	assert.False(t, c.EmailConfigured())
+	assert.Equal(t, SMTPConfig{Port: 587, TLS: SMTPStartTLS}, c.SMTP)
+}
+
+func TestLoadSMTP(t *testing.T) {
+	setRequired(t)
+	t.Setenv("SMTP_HOST", "smtp.example.com")
+	t.Setenv("SMTP_PORT", "465")
+	t.Setenv("SMTP_USERNAME", "apikey")
+	t.Setenv("SMTP_PASSWORD", " s3cret-pass ")
+	t.Setenv("SMTP_FROM", "CryptoPay <no-reply@example.com>")
+	t.Setenv("SMTP_TLS", "TLS")
+	c, err := Load()
+	require.NoError(t, err)
+	assert.True(t, c.EmailConfigured())
+	assert.Equal(t, SMTPConfig{Host: "smtp.example.com", Port: 465, Username: "apikey", Password: " s3cret-pass ",
+		From: "CryptoPay <no-reply@example.com>", TLS: SMTPTLS}, c.SMTP)
+	s := c.String()
+	assert.NotContains(t, s, "s3cret-pass", "the SMTP password is never logged")
+	assert.Contains(t, s, `smtp_password="[redacted]"`)
+	assert.Contains(t, s, `smtp_host="smtp.example.com"`)
+
+	// Local relay (Mailpit): no TLS, no credentials, default-less port.
+	setRequired(t)
+	t.Setenv("SMTP_HOST", "mailpit")
+	t.Setenv("SMTP_PORT", "1025")
+	t.Setenv("SMTP_FROM", "no-reply@cryptopay.local")
+	t.Setenv("SMTP_TLS", "none")
+	c, err = Load()
+	require.NoError(t, err)
+	assert.True(t, c.EmailConfigured())
+	assert.Equal(t, SMTPNoTLS, c.SMTP.TLS)
+	assert.Equal(t, 1025, c.SMTP.Port)
+
+	// SMTP_FROM without a host: e-mail is off (compose sets a default sender).
+	setRequired(t)
+	t.Setenv("SMTP_FROM", "CryptoPay <no-reply@example.com>")
+	c, err = Load()
+	require.NoError(t, err)
+	assert.False(t, c.EmailConfigured())
+
+	// IPv6 literal hosts are fine.
+	setRequired(t)
+	t.Setenv("SMTP_HOST", "::1")
+	t.Setenv("SMTP_FROM", "a@b.example")
+	_, err = Load()
+	require.NoError(t, err)
 }
 
 func TestLoadAll(t *testing.T) {
@@ -165,6 +213,12 @@ func TestValidationErrors(t *testing.T) {
 		{"bad proxy", map[string]string{"TRUSTED_PROXIES": "10.0.0.0/33"}, "TRUSTED_PROXIES"},
 		{"bad trust flag", map[string]string{"TRUST_PROXY_HEADERS": "sometimes"}, "TRUST_PROXY_HEADERS"},
 		{"bad private webhook flag", map[string]string{"WEBHOOK_ALLOW_PRIVATE": "perhaps"}, "WEBHOOK_ALLOW_PRIVATE"},
+		{"smtp host only", map[string]string{"SMTP_HOST": "smtp.example.com"}, "SMTP_FROM is required"},
+		{"smtp bad port", map[string]string{"SMTP_HOST": "h", "SMTP_FROM": "a@b.example", "SMTP_PORT": "70000"}, "SMTP_PORT"},
+		{"smtp bad tls", map[string]string{"SMTP_HOST": "h", "SMTP_FROM": "a@b.example", "SMTP_TLS": "ssl"}, "SMTP_TLS"},
+		{"smtp host url", map[string]string{"SMTP_HOST": "smtp://h:25", "SMTP_FROM": "a@b.example"}, "SMTP_HOST must be a host name"},
+		{"smtp bad from", map[string]string{"SMTP_HOST": "h", "SMTP_FROM": "CryptoPay"}, "SMTP_FROM"},
+		{"smtp user only", map[string]string{"SMTP_HOST": "h", "SMTP_FROM": "a@b.example", "SMTP_USERNAME": "u"}, "SMTP_USERNAME and SMTP_PASSWORD"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

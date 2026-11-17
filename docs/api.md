@@ -180,6 +180,13 @@ User management is owner-only. Every mutation writes an audit log entry.
 ```ts
 interface AdminUser { id: string; email: string; role: "owner"|"admin"|"viewer"; active: boolean; last_login_at: string|null; created_at: string; }
 
+// One row of the e-mail outbox (bodies only in GET /email/outbox/{id}).
+interface EmailMessage {
+  id: string; kind: string; to: string; subject: string;
+  status: "pending"|"sent"|"failed"; attempts: number; last_error: string;
+  created_at: string; sent_at: string | null;
+}
+
 interface Merchant { id: string; name: string; status: "active"|"disabled"; webhook_url: string; has_webhook_secret: boolean; created_at: string; updated_at: string; }
 interface ApiKey { id: string; merchant_id: string; name: string; prefix: string; last_used_at: string|null; revoked_at: string|null; created_at: string; }
 
@@ -226,6 +233,10 @@ interface Settings {
   stablecoin_peg: boolean; rate_markup_bps: number;
   webhook_max_attempts: number; webhook_timeout_seconds: number;
   checkout_base_url: string; walletconnect_project_id: string;
+  security_emails: boolean;      // e-mail admins about security events on their own account
+  alert_emails: boolean;         // e-mail operational alerts
+  alert_recipients: string[];    // max 10 addresses; [] = every active owner
+  email_locale: "zh"|"en";       // language of every e-mail
 }
 
 interface Overview {
@@ -274,12 +285,17 @@ interface Overview {
 | `GET /webhook-events` | `status?`, `merchant_id?`, `invoice_id?`, paging | `Page<WebhookEvent>` |
 | `POST /webhook-events/{id}/retry` | | `WebhookEvent` (re-queued for immediate delivery) |
 | `GET /settings` | | `Settings` |
-| `PUT /settings` | `Settings` | `Settings` |
+| `PUT /settings` | `Settings` | `Settings` (every field required; invalid `alert_recipients` → 400 `fields.alert_recipients`) |
 | `GET /users` | | `{ items: AdminUser[] }` |
 | `POST /users` | `{ email, password, role }` | `201 AdminUser` |
 | `PATCH /users/{id}` | `{ role?, active?, password? }` | `AdminUser` (cannot demote/deactivate the last owner) |
 | `DELETE /users/{id}` | | `204` (not yourself, not the last owner) |
 | `GET /audit-logs` | `action?`, `actor?`, paging | `Page<AuditLog>` |
+| `GET /email/status` | | `{ configured: boolean; from: string; host: string }` (`host` only, never credentials; `""` when not configured) |
+| `POST /email/test` | `{ to?: string }` (default: the caller's own address; invalid → 400 `fields.to`) | `{ ok: boolean; error: string }` (sends synchronously; `error` is a sanitized SMTP error; 409 when e-mail is not configured; 429 when used too often; owner/admin) |
+| `GET /email/outbox` | `status?`, `kind?`, paging | `Page<EmailMessage>` (newest first; owner/admin) |
+| `GET /email/outbox/{id}` | | `EmailMessage & { body_text: string }` (owner/admin) |
+| `POST /email/outbox/{id}/retry` | | `EmailMessage` (a failed or pending message is re-queued for immediate delivery, keeping its attempt count; 409 for a message that was already sent; owner/admin) |
 
 ### Receiving wallets
 
@@ -301,3 +317,29 @@ See `architecture.md`, "Receiving wallets".
   removing a binding that does not exist changes nothing and is not logged.
 * A wallet used by any merchant cannot be deleted (409) until those
   merchants are switched back to the default wallet or to another wallet.
+
+### E-mail
+
+E-mail is configured with the `SMTP_*` environment variables (README); it
+is *configured* when `SMTP_HOST` and `SMTP_FROM` are set. Without it nothing
+is queued and `GET /email/status` reports `configured: false`.
+
+Messages are written to an outbox (`GET /email/outbox`) and delivered by a
+background worker with retries (`min(2^attempt × 30 s, 2 h)`, at most 8
+attempts, then `failed`). `kind` is one of:
+
+| kind | sent to | when | throttle |
+|---|---|---|---|
+| `security.new_login` | the user | sign-in from an IP address not seen for the account before (not on the account's first sign-in) | — |
+| `security.login_blocked` | the user | sign-in blocked after repeated failed password attempts | 1 per account per hour |
+| `security.password_changed` | the user | password changed by the user or by an owner | — |
+| `security.account_created` / `security.role_changed` / `security.account_deactivated` / `security.account_reactivated` | the user | an owner created the account, changed its role, deactivated or reactivated it | — |
+| `alert.webhook_failed` | alert recipients | a webhook event exhausted its retries | 1 per merchant per hour |
+| `alert.transfer_unmatched` | alert recipients | a transfer was stored without a matching invoice | 1 per chain per hour |
+| `alert.invoice_underpaid` | alert recipients | an invoice became `underpaid` | 1 per invoice |
+| `alert.scanner_failing` | alert recipients | a chain's scanner has been failing for 10 minutes or longer | 1 per chain per 6 hours |
+
+`security.*` mails are sent when `security_emails` is on, `alert.*` mails
+when `alert_emails` is on; alert recipients are `alert_recipients`, or every
+active owner when that list is empty. `email_locale` selects the language.
+No mail ever contains a password, secret, code or token.

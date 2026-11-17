@@ -58,6 +58,7 @@ docker compose ps                   # 等待 backend 显示 healthy
 - 端口被占用时可在 `.env` 中修改 `WEB_PORT` / `BACKEND_PORT`
 - 开发演示数据：`make seed-dev`——创建演示商户和 API key（只显示一次），并把由公开的 Hardhat 测试助记词派生的 **仅供测试** 的 xpub 钱包设为 Sepolia / Tron Nile / Bitcoin Testnet 的默认钱包并启用这些测试网（`APP_ENV=production` 时拒绝运行；**切勿向这些地址发送真实资产**）
 - 在测试网上手动走一遍下单、付款、确认和 Webhook：见 [docs/testnet-walkthrough.md](docs/testnet-walkthrough.md)（本地 Webhook 接收器：`scripts/webhook-receiver.py`）
+- 本地邮件：compose 自带 [Mailpit](https://mailpit.axllent.org/)，网关发出的所有邮件（安全通知、告警、测试邮件）都会被它截获，在 http://localhost:8025 查看（端口可用 `MAILPIT_PORT` 修改）；Mailpit 只在本机收信，**不会**把邮件真正发出去
 - 停止：`make down`；删除数据卷：`make clean`
 
 不使用 Docker 时：`cd backend && go run ./cmd/gateway`（需要 `DATABASE_URL`、`APP_SECRET`），前端见 `web/README.md`。
@@ -76,6 +77,18 @@ docker compose ps                   # 等待 backend 显示 healthy
 3. **配置商用 RPC**（链 → RPC）。内置默认值是免费公共节点，只适合开发测试；生产环境请为每条链填写 Alchemy / Infura / QuickNode（EVM）、TronGrid（`?apikey=`）、Helius（Solana）、GetBlock 或自建节点（BTC/LTC）等地址，可用“测试 RPC”检查。RPC 地址在数据库中加密存储，界面只显示 `协议://主机/…`。
 4. **创建商户与 API key**（商户 → 新建）。webhook 签名密钥和 API key 明文**只显示一次**，请立即保存到商户后端。需要独立收款时，在商户详情页的“收款钱包”里为各条链选择该商户自己的钱包（见第 2 步）。
 5. 按需调整**设置**：账单有效期、宽限期、少付容差、汇率加价、`checkout_base_url`（收银台对外地址，例如 `https://pay.example.com`）、WalletConnect project id 等。
+6. **邮件通知**：配置好 SMTP 后在“设置 → 邮件通知”中发送一封测试邮件，并按需开启运营告警（见下文“管理员账户安全”）。
+
+## 管理员账户安全
+
+### 邮件通知
+
+配置 SMTP（见下文“配置参考”与 `.env.example`）后，网关通过发件箱（失败按 `min(2^n × 30s, 2h)` 重试，最多 8 次）发送：
+
+- **安全通知**（发给相关管理员本人，“设置 → 邮件通知 → 安全通知”控制，默认开启）：从未用过的 IP 登录（账户首次登录不发）、多次登录失败被暂时阻止（每个账户每小时最多一封）、密码被修改（本人或 owner）、账户被创建、角色变更、停用 / 重新启用。
+- **运营告警**（默认关闭；收件人为“告警收件人”，留空则发给所有启用中的 owner）：Webhook 事件最终投递失败（每个商户每小时最多一封）、收到无法匹配的转账（每条链每小时最多一封）、账单变为少付（每张账单一封）、某条链的扫描器连续失败 10 分钟以上（每条链每 6 小时最多一封）。告警在数据库事务提交之后异步产生，邮件发送失败或变慢不会影响收款处理。
+- 邮件语言由“邮件语言”设置决定（中文 / English）；所有时间以 UTC 显示。邮件中不包含任何密码、密钥、验证码或令牌。
+- 后台“邮件记录”页面可查看发件箱、按状态 / 类型筛选、查看正文，并重试失败的邮件；“设置 → 邮件通知”可以发送测试邮件并显示 SMTP 返回的错误。
 
 ## 商户接入
 
@@ -159,9 +172,13 @@ func cryptopayWebhook(w http.ResponseWriter, r *http.Request) {
 | `CORS_ORIGINS` | — | 允许直接在浏览器调用 `/api/v1` 的来源（通常留空） |
 | `COINGECKO_API_KEY` / `COINGECKO_PRO` / `COINGECKO_BASE_URL` | — | 汇率来源 CoinGecko |
 | `RPC_<CHAIN_ID>` | 内置公共节点 | 每条链的 RPC，逗号分隔做故障切换，例如 `RPC_TRON_NILE`；后台配置优先 |
-| `WEB_PORT` / `BACKEND_PORT` / `POSTGRES_PASSWORD` | `3000` / `8080` / 开发密码 | 仅 docker compose 使用 |
+| `SMTP_HOST` / `SMTP_FROM` | compose 中为 `mailpit` / `CryptoPay <no-reply@cryptopay.local>` | 发信服务器与发件人；两者都设置才启用邮件（`SMTP_HOST` 为空即关闭邮件；设置了 `SMTP_HOST` 却没有 `SMTP_FROM` 会启动失败） |
+| `SMTP_PORT` | `587` | SMTP 端口（隐式 TLS 通常是 465，Mailpit 是 1025） |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` | — | SMTP 认证（AUTH PLAIN，只在 TLS 连接上发送）；密码不会写入日志 |
+| `SMTP_TLS` | `starttls` | `starttls`（必须升级为 TLS，服务器不支持时拒绝发送而不是明文发送）、`tls`（隐式 TLS）、`none`（明文，仅限本机 / 内网中继如 Mailpit） |
+| `WEB_PORT` / `BACKEND_PORT` / `MAILPIT_PORT` / `POSTGRES_PASSWORD` | `3000` / `8080` / `8025` / 开发密码 | 仅 docker compose 使用 |
 
-运行时可调参数（有效期、宽限期、容差、加价、webhook 次数与超时、`checkout_base_url`）在后台“设置”中修改。各项说明见 [`.env.example`](.env.example)。
+运行时可调参数（有效期、宽限期、容差、加价、webhook 次数与超时、`checkout_base_url`、邮件通知开关、告警收件人、邮件语言）在后台“设置”中修改。各项说明见 [`.env.example`](.env.example)。
 
 `gateway` 命令：`serve`（默认，启动时自动迁移，`--no-migrate` 关闭）、`migrate`、`create-admin --email --password --role`、`seed-dev`、`healthcheck`、`version`。
 
@@ -186,13 +203,15 @@ make lint           # gofmt / go vet / eslint / tsc
 - **非托管 / 只读**：网关只保存扩展**公钥**或固定地址，只调用只读 RPC，不签名、不广播交易。资金归集（sweep）由商户自己持有助记词的钱包软件完成，不在本系统范围内。
 - **永远不要粘贴私钥或助记词**。`xprv` 等私钥会被拒绝；任何要求你在后台输入助记词的指引都是错误的。
 - `APP_SECRET` 加密数据库中的 RPC 地址（常含 API key）和 webhook 签名密钥；API key 与会话令牌只保存 SHA-256 哈希。丢失 `APP_SECRET` 会导致这些密文无法解密，泄露则需要轮换所有 RPC key 与 webhook 密钥。
-- 管理后台：HttpOnly + SameSite=Lax 会话 cookie（生产环境 Secure）、所有写操作要求 `X-Requested-With: cryptopay`（CSRF 防护）、登录失败按 IP+邮箱限流、owner / admin / viewer 三级权限，所有修改写入审计日志（不含密钥、密码和完整 RPC 地址）。
+- 管理后台：HttpOnly + SameSite=Lax 会话 cookie（生产环境 Secure）、所有写操作要求 `X-Requested-With: cryptopay`（CSRF 防护）、登录失败按 IP+邮箱限流、安全事件邮件通知、owner / admin / viewer 三级权限，所有修改写入审计日志（不含密钥、密码和完整 RPC 地址）。
 - 账单 UUID 即收银台的访问凭证：不要在公开场合泄露 `checkout_url`。
 
 ### 生产环境检查清单
 
 - [ ] `APP_ENV=production`，全程 HTTPS（反向代理终止 TLS），设置正确的 `checkout_base_url`
 - [ ] 强随机 `APP_SECRET` 并离线备份；强 `ADMIN_PASSWORD`，首次登录后修改；`POSTGRES_PASSWORD` 已修改
+- [ ] 配置真实的 SMTP 服务（`SMTP_TLS=starttls` 或 `tls`，不要在公网上用 `none`；生产环境去掉或不要暴露 Mailpit），发送测试邮件确认能收到；发件域名配置 SPF / DKIM，避免通知进入垃圾箱
+- [ ] 打开运营告警并设置告警收件人（或确认所有 owner 的邮箱有人查看）
 - [ ] 每条启用的链都配置了商用 RPC（不要依赖免费公共节点），并用“测试 RPC”验证
 - [ ] 钱包预览地址已与自己的钱包软件核对；测试用的 Hardhat 钱包**没有**分配给主网（既不是默认钱包，也不是商户专属钱包）
 - [ ] 反向代理会覆盖/追加 `X-Forwarded-For`，并把代理地址配置到 `TRUSTED_PROXIES`（否则所有顾客共用一个限流桶）

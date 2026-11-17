@@ -24,6 +24,10 @@ import type {
   CreateMerchantResponse,
   CreateUserRequest,
   CreateWalletRequest,
+  EmailMessage,
+  EmailMessageDetail,
+  EmailOutboxQuery,
+  EmailStatus,
   InvoiceDetail,
   ItemsResponse,
   LoginRequest,
@@ -38,6 +42,8 @@ import type {
   RotateWebhookSecretResponse,
   SetMerchantWalletRequest,
   Settings,
+  TestEmailRequest,
+  TestEmailResult,
   TestRpcRequest,
   TestRpcResult,
   Transfer,
@@ -191,6 +197,20 @@ export function createAdminApi(client: ApiClient = apiClient) {
     /** `GET /audit-logs` */
     listAuditLogs: (query: AuditLogQuery = {}, o?: Opts) =>
       client.get<Page<AuditLog>>(`${A}/audit-logs`, { ...query }, o),
+
+    // ---- e-mail ----------------------------------------------------------
+    /** `GET /email/status` */
+    getEmailStatus: (o?: Opts) => client.get<EmailStatus>(`${A}/email/status`, undefined, o),
+    /** `POST /email/test` (synchronous; 409 when e-mail is not configured). */
+    sendTestEmail: (body: TestEmailRequest = {}) => client.post<TestEmailResult>(`${A}/email/test`, body),
+    /** `GET /email/outbox` (owner/admin). */
+    listEmailOutbox: (query: EmailOutboxQuery = {}, o?: Opts) =>
+      client.get<Page<EmailMessage>>(`${A}/email/outbox`, { ...query }, o),
+    /** `GET /email/outbox/{id}` (with the text body). */
+    getEmailMessage: (id: string, o?: Opts) =>
+      client.get<EmailMessageDetail>(`${A}/email/outbox/${seg(id)}`, undefined, o),
+    /** `POST /email/outbox/{id}/retry` (409 for a message that was already sent). */
+    retryEmailMessage: (id: string) => client.post<EmailMessage>(`${A}/email/outbox/${seg(id)}/retry`),
   };
 }
 

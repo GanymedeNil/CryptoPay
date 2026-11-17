@@ -11,6 +11,7 @@ import (
 
 	"cryptopay/internal/auth"
 	"cryptopay/internal/domain"
+	"cryptopay/internal/notify"
 	"cryptopay/internal/store"
 )
 
@@ -46,6 +47,7 @@ func (a *API) adminRoutes(r chi.Router) {
 		// Any role, including viewers.
 		r.Get("/auth/me", a.me)
 		r.Post("/auth/password", a.changePassword)
+		r.Get("/email/status", a.emailStatus)
 
 		r.Group(func(r chi.Router) {
 			// Viewers are read-only.
@@ -93,6 +95,16 @@ func (a *API) adminRoutes(r chi.Router) {
 			r.Put("/settings", a.adminPutSettings)
 
 			r.Get("/audit-logs", a.adminListAuditLogs)
+
+			r.Group(func(r chi.Router) {
+				// E-mail addressed to other admins: owners and admins only,
+				// reads included.
+				r.Use(a.requireWriteRole)
+				r.Post("/email/test", a.emailTest)
+				r.Get("/email/outbox", a.emailOutbox)
+				r.Get("/email/outbox/{id}", a.emailGet)
+				r.Post("/email/outbox/{id}/retry", a.emailRetry)
+			})
 
 			r.Group(func(r chi.Router) {
 				// User management is owner-only, reads included.
@@ -166,6 +178,18 @@ func (a *API) requireWriteForMutations(next http.Handler) http.Handler {
 		ad, _ := adminFrom(r.Context())
 		if !isSafeMethod(r.Method) && !ad.User.Role.CanWrite() {
 			a.fail(w, r, errForbidden("your role ("+string(ad.User.Role)+") is read-only"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requireWriteRole restricts a group to owners and admins, reads included (403).
+func (a *API) requireWriteRole(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ad, _ := adminFrom(r.Context())
+		if !ad.User.Role.CanWrite() {
+			a.fail(w, r, errForbidden("only owners and admins can do this"))
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -253,4 +277,40 @@ func (a *API) auditAfter(ctx context.Context, e auditEntry) {
 // inTx runs fn in a transaction (store.WithTx).
 func (a *API) inTx(ctx context.Context, fn func(tx *store.Store) error) error {
 	return a.store.WithTx(ctx, fn)
+}
+
+// ---- security e-mails ----
+
+// notifySecurity enqueues a security e-mail for user (package notify) on tx
+// — inside a savepoint when tx is a transaction — without ever failing the
+// request: errors are logged. A rolled back change mails nothing.
+func (a *API) notifySecurity(ctx context.Context, tx *store.Store, user domain.AdminUser, ev notify.Event) {
+	if !a.notifier.Enabled() {
+		return
+	}
+	if ev.IP == "" && ev.Kind != notify.Kind2FAReset {
+		ev.IP = clientIPFrom(ctx)
+	}
+	err := tx.WithTx(ctx, func(sp *store.Store) error { return a.notifier.Security(ctx, sp, user, ev) })
+	if err != nil {
+		a.log.ErrorContext(ctx, "enqueue security e-mail failed", "request_id", requestIDFrom(ctx), "kind", ev.Kind, "error", err)
+		return
+	}
+	a.kickEmail()
+}
+
+// kickEmail nudges the mail dispatcher (non-blocking).
+func (a *API) kickEmail() {
+	if a.hooks.EmailKick != nil {
+		a.hooks.EmailKick()
+	}
+}
+
+// userAgent returns the request's user agent, bounded for storage.
+func userAgent(r *http.Request) string {
+	ua := r.UserAgent()
+	if len(ua) > 512 {
+		ua = ua[:512]
+	}
+	return ua
 }

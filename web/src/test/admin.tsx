@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, type RenderOptions } from "@testing-library/react";
 import { AuthProvider } from "@/components/admin/auth";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import type { AdminRole, AdminUser, Chain, Merchant, Settings, Wallet } from "@/lib/api/types";
+import type { AdminRole, AdminUser, Chain, EmailMessage, Merchant, Settings, Wallet } from "@/lib/api/types";
 import type { Locale } from "@/lib/i18n/config";
 import { I18nProvider } from "@/lib/i18n/provider";
 
@@ -14,6 +14,21 @@ export function adminUser(role: AdminRole = "owner", overrides: Partial<AdminUse
     active: true,
     last_login_at: "2026-11-16T07:00:00Z",
     created_at: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+export function emailFixture(overrides: Partial<EmailMessage> = {}): EmailMessage {
+  return {
+    id: "e-1",
+    kind: "alert.webhook_failed",
+    to: "ops@example.com",
+    subject: "[CryptoPay] Webhook delivery failed for Acme Coffee Roasters",
+    status: "failed",
+    attempts: 8,
+    last_error: "dial tcp 10.0.0.5:587: connection refused",
+    created_at: "2026-11-16T06:00:00Z",
+    sent_at: null,
     ...overrides,
   };
 }
@@ -120,4 +135,8 @@ export const SETTINGS: Settings = {
   webhook_timeout_seconds: 10,
   checkout_base_url: "https://pay.example.com",
   walletconnect_project_id: "",
+  security_emails: true,
+  alert_emails: false,
+  alert_recipients: [],
+  email_locale: "zh",
 };

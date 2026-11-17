@@ -85,7 +85,8 @@ src/
                              relative.ts (relative time, date inputs), units.ts (bps↔%, durations)
     checkout/                pure checkout logic: state machine, payment amounts/URIs, asset grouping
     admin/                   admin data layer (TanStack Query keys/hooks), errors, URL state, roles,
-                             settings-form conversions, timeline, explorer links, wallet-input checks
+                             settings-form conversions, timeline, explorer links, wallet-input checks,
+                             e-mail kinds
     wallets/                 wallet adapters per family (evm, tron, solana, bitcoin), deep links, detection
     explorer.ts, clipboard.ts, device.ts, env.ts, browser.ts, utils.ts (cn)
   test/                      setup, renderWithProviders, fixtures, admin.tsx (renderAdmin + admin fixtures)
@@ -213,7 +214,8 @@ title (`src/lib/admin/metadata.ts`).
 | `/admin/chains` | grouped mainnet / testnet: enable (optimistic), payable + reasons (payable = the default wallet; merchant-wallet count and "merchants with their own wallet can still be paid"), scanner state, RPC editor (masked list, replace / reset, per-URL test), default-RPC warning on mainnets, scan parameters, default receiving wallet (same family only) |
 | `/admin/assets` | grouped by chain: enable (optimistic), edit precision / order / rate key / name, add custom token |
 | `/admin/wallets` | list with usage (default wallet of chains · merchant wallet of merchants, linked), 3-step wizard (type → key + `POST /wallets/preview` + "I checked" → name) with the "never paste a private key" notice, local secret and duplicate-key detection (a 409 `fields.xpub` / `fields.address` sends the wizard back to the key), rename, delete (409 explained: quotes, or the merchants using it) |
-| `/admin/settings` | every `Settings` field in operator units (minutes / hours, %), validation, sticky save bar |
+| `/admin/settings` | every `Settings` field in operator units (minutes / hours, %), validation, sticky save bar; "Email notifications" (`GET /email/status` — host / sender, or how to configure `SMTP_*` —, security / alert email switches, alert recipients editor (max 10, validated, Enter adds), email language, "send test email" with the SMTP outcome) |
+| `/admin/emails` | owner / admin only (hidden for viewers): the e-mail outbox, `status` / `kind` filters in the URL (kinds with readable labels), expandable rows that load the text body, retry for failed messages, "not configured" notice |
 | `/admin/users` | owner only (hidden from the nav otherwise): create (random password generator), role, (de)activate, reset password, delete, "last owner" errors |
 | `/admin/audit-logs` | `action`, `actor` filters, expandable detail JSON, links to the target |
 
@@ -334,7 +336,8 @@ Seeded scenarios (open `http://localhost:8787/mock` for links and controls):
 
 Controls: `GET /mock/invoices/{id}/advance?to=next|pending|partial|confirming|paid|overpaid|expired|underpaid|cancelled`,
 `POST /mock/invoices` `{ amount, currency, asset_id, wallet_kind, state, ttl_seconds, id }`,
-`GET /mock/outage?seconds=20` (503s), `GET /mock/reset`.
+`GET /mock/outage?seconds=20` (503s), `GET /mock/reset`. `MOCK_SMTP=off` starts
+the mock with e-mail "not configured".
 
 **Admin API** (`mock/admin.mjs`, every endpoint of docs/api.md §3, state in
 memory, reset by `/mock/reset`): `cp_session` HttpOnly cookie, CSRF header
@@ -353,4 +356,8 @@ wallet), custom token without a rate, audit history. Assets disabled in the
 console, or without a receiving wallet for the invoice's merchant (its own,
 else the chain's default), disappear from the mock checkout. RPC tests fail for
 hosts containing `bad` / `invalid` / `down`; webhook deliveries fail for URLs
-containing `broken` / `down`. `mock/admin.test.mjs` smoke-tests it.
+containing `broken` / `down`. E-mail: `GET /email/status` reports
+Mailpit, the outbox is seeded with security notices and alerts (some
+failed), new security events queue mails while the toggles are on, queued
+mails "send" after ~1.5 s, and addresses containing `bounce` / `fail` are
+rejected (test mail and delivery). `mock/admin.test.mjs` smoke-tests it.

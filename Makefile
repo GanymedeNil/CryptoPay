@@ -8,10 +8,11 @@ COMPOSE_TEST ?= docker compose -f docker-compose.test.yml
 help: ## list targets
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-up: ## build and start postgres + backend + web (http://localhost:3000)
+up: ## build and start postgres + backend + web (http://localhost:3000) + mailpit
 	$(COMPOSE) up --build -d
 	@echo "web:     http://localhost:$${WEB_PORT:-3000}  (admin: /admin)"
 	@echo "backend: http://127.0.0.1:$${BACKEND_PORT:-8080}/healthz"
+	@echo "mailpit: http://localhost:$${MAILPIT_PORT:-8025}  (e-mail sent by the gateway, captured locally)"
 
 down: ## stop the stack (data volume is kept; `make clean` removes it)
 	$(COMPOSE) down

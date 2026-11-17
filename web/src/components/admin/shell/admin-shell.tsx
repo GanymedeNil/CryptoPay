@@ -119,7 +119,7 @@ function ShellFrame({ children }: { children: React.ReactNode }) {
 function AppSidebar() {
   const t = useT();
   const pathname = usePathname();
-  const { isOwner } = useAuth();
+  const { isOwner, canWrite } = useAuth();
   const { isMobile, setOpenMobile } = useSidebar();
   return (
     <Sidebar collapsible="icon" mobileTitle={t("admin.nav.mobileTitle")} mobileDescription={t("admin.nav.mobileDescription")}>
@@ -134,7 +134,7 @@ function AppSidebar() {
       </SidebarHeader>
       <SidebarContent className="gap-0 py-1">
         {NAV.map((group, gi) => {
-          const items = group.items.filter((i) => !i.ownerOnly || isOwner);
+          const items = group.items.filter((i) => (!i.ownerOnly || isOwner) && (!i.writersOnly || canWrite));
           if (items.length === 0) return null;
           return (
             <SidebarGroup key={gi} className="py-1.5">

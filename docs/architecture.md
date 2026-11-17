@@ -47,10 +47,13 @@ backend/                     Go module "cryptopay"
   internal/invoice/          invoice + quote service, state machine
   internal/scanner/          per-chain scan loop, confirmations, reorgs
   internal/webhook/          outbox dispatcher (HMAC signed, retries)
+  internal/alert/            Notifier seam between the money path and alerts (+ async Queue)
+  internal/notify/           which e-mail to send when, to whom; bilingual templates
+  internal/mailer/           SMTP sender, MIME, e-mail outbox dispatcher
   internal/api/              HTTP: merchant, checkout, admin
 web/                         Next.js (App Router) + shadcn/ui
 docs/                        this file, api.md
-docker-compose.yml           postgres + backend + web
+docker-compose.yml           postgres + backend + web + mailpit (local mail catcher)
 docker-compose.test.yml      runs every test suite in containers
 ```
 
@@ -204,3 +207,38 @@ X-CryptoPay-Signature: hex(HMAC-SHA256(secret, timestamp + "." + body))
 
 2xx = delivered. Otherwise retried with exponential backoff
 (`min(2^attempt × 15s, 6h)`) up to `webhook_max_attempts`.
+
+## Admin security
+
+**E-mail.** `internal/notify` decides what is mailed; messages go into the
+`email_outbox` table and `internal/mailer.Dispatcher` delivers them like the
+webhook dispatcher (claim with `FOR UPDATE SKIP LOCKED` and a lease, so
+several instances never send a message twice; retries
+`min(2^attempt × 30 s, 2 h)`, 8 attempts). Nothing is queued unless
+`SMTP_HOST` and `SMTP_FROM` are set. The SMTP sender requires STARTTLS in
+mode `starttls` (it refuses to fall back to clear text), sends credentials
+only over TLS and never logs the password.
+
+* *Security notifications* (`security.*`, to the affected admin, setting
+  `security_emails`) are enqueued on the transaction of the change they
+  report — a rolled back change mails nothing: sign-in from an IP the
+  account never used before (judged from earlier `auth.login` audit entries
+  and sessions; never on the account's first sign-in), sign-in blocked by
+  the failure throttle (one per account per hour), password changed,
+  account created, role changed, deactivated, reactivated.
+* *Operational alerts* (`alert.*`, setting `alert_emails`, recipients
+  `alert_recipients` or every active owner): a webhook event that reached
+  `failed`, an unmatched transfer, an invoice that became `underpaid`, a
+  chain whose scanner has failed for 10 minutes. The invoice service,
+  scanner and webhook dispatcher only see the small `alert.Notifier`
+  interface; they call it **after** their transaction committed
+  (`invoice.Service.Committed`, the scanner after recording a transfer, the
+  dispatcher after recording the final failure), through `alert.Notify`
+  (nil-safe, recovers panics). The production notifier is an `alert.Queue`:
+  a bounded buffer drained by one goroutine, so a slow or failing mail path
+  can neither roll back, fail nor delay payment processing — an alert is
+  dropped (and logged) rather than waited for. Each kind is throttled with
+  the outbox's `(kind, dedupe_key, created_at)` index under an advisory lock
+  (per merchant per hour, per chain per hour, per invoice once, per chain
+  per 6 hours), so a storm cannot flood a mailbox, also with several
+  gateway instances.

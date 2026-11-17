@@ -59,6 +59,9 @@ func (c *contractRun) fail(name string, r *response, status int) {
 	assert.Empty(c.t, c.doc.check(name, v, c.envelope), "%s: %s", name, r.Body)
 }
 
+// vc2 is a fresh viewer client.
+func vc2(h *harness) *adminClient { return h.newAdmin(domain.RoleViewer) }
+
 func nonEmpty(t *testing.T, m map[string]any, key string) {
 	t.Helper()
 	arr, ok := m[key].([]any)
@@ -73,7 +76,7 @@ func nonEmpty(t *testing.T, m map[string]any, key string) {
 func TestContractResponses(t *testing.T) {
 	t.Parallel()
 	doc := loadContract(t)
-	h := newHarness(t)
+	h := newHarness(t, withEmail())
 	c := &contractRun{t: t, doc: doc, envelope: doc.errorEnvelope(t), seen: map[string]bool{}}
 	owner := h.newAdmin(domain.RoleOwner)
 
@@ -191,6 +194,19 @@ func TestContractResponses(t *testing.T) {
 	c.ok("PATCH /api/admin/users/{id}", owner.patch("/users/"+u["id"].(string), map[string]any{"role": "admin"}))
 	c.ok("DELETE /api/admin/users/{id}", owner.del("/users/"+u["id"].(string)))
 	nonEmpty(t, c.ok("GET /api/admin/audit-logs", owner.get("/audit-logs")), "items")
+
+	// ---- admin: e-mail ----
+	status := c.ok("GET /api/admin/email/status", vc2(h).get("/email/status"))
+	assert.Equal(t, true, status["configured"])
+	c.ok("POST /api/admin/email/test", owner.post("/email/test", map[string]any{}))
+	outbox := c.ok("GET /api/admin/email/outbox", owner.get("/email/outbox"))
+	nonEmpty(t, outbox, "items")
+	emailID := outbox["items"].([]any)[0].(map[string]any)["id"].(string)
+	c.ok("GET /api/admin/email/outbox/{id}", owner.get("/email/outbox/"+emailID))
+	_, err := h.Store.MarkEmailFailed(h.Ctx, mustUUID(t, emailID), "550 mailbox unavailable", h.Clock.Now(), 1)
+	require.NoError(t, err)
+	c.ok("POST /api/admin/email/outbox/{id}/retry", owner.post("/email/outbox/"+emailID+"/retry", nil))
+	c.fail("outbox 403 viewer", vc2(h).get("/email/outbox"), http.StatusForbidden)
 
 	// ---- router errors ----
 	c.fail("404 route", h.do(http.MethodGet, "/api/nope", nil), http.StatusNotFound)

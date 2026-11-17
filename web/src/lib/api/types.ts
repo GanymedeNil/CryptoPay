@@ -282,6 +282,38 @@ export interface AdminUser {
   created_at: string;
 }
 
+export type EmailMessageStatus = "pending" | "sent" | "failed";
+
+/** E-mail kinds of docs/api.md ("E-mail"). */
+export type EmailKind =
+  | "security.new_login"
+  | "security.login_blocked"
+  | "security.password_changed"
+  | "security.account_created"
+  | "security.role_changed"
+  | "security.account_deactivated"
+  | "security.account_reactivated"
+  | "alert.webhook_failed"
+  | "alert.transfer_unmatched"
+  | "alert.invoice_underpaid"
+  | "alert.scanner_failing";
+
+/** One row of the e-mail outbox (bodies only in `GET /email/outbox/{id}`). */
+export interface EmailMessage {
+  id: string;
+  kind: EmailKind | (string & {});
+  to: string;
+  subject: string;
+  status: EmailMessageStatus;
+  attempts: number;
+  last_error: string;
+  created_at: string;
+  sent_at: string | null;
+}
+
+/** `GET /email/outbox/{id}` */
+export type EmailMessageDetail = EmailMessage & { body_text: string };
+
 export type MerchantStatus = "active" | "disabled";
 
 export interface Merchant {
@@ -416,7 +448,17 @@ export interface Settings {
   webhook_timeout_seconds: number;
   checkout_base_url: string;
   walletconnect_project_id: string;
+  /** E-mail admins about security events on their own account. */
+  security_emails: boolean;
+  /** E-mail operational alerts. */
+  alert_emails: boolean;
+  /** Max 10 addresses; [] = every active owner. */
+  alert_recipients: string[];
+  /** Language of every e-mail. */
+  email_locale: EmailLocale;
 }
+
+export type EmailLocale = "zh" | "en";
 
 export interface Overview {
   range_days: number;
@@ -454,6 +496,29 @@ export interface Overview {
 export interface LoginRequest {
   email: string;
   password: string;
+}
+
+export interface EmailStatus {
+  configured: boolean;
+  from: string;
+  /** Host only, never credentials; "" when not configured. */
+  host: string;
+}
+
+export interface TestEmailRequest {
+  /** Default: the caller's own address. */
+  to?: string;
+}
+
+export interface TestEmailResult {
+  ok: boolean;
+  /** Sanitized SMTP error ("" when ok). */
+  error: string;
+}
+
+export interface EmailOutboxQuery extends PageQuery {
+  status?: EmailMessageStatus;
+  kind?: string;
 }
 
 export interface ChangePasswordRequest {

@@ -26,13 +26,23 @@ func TestSettingsDefaultsAndRoundTrip(t *testing.T) {
 		InvoiceTTLSeconds: 900, GracePeriodSeconds: 3600, UnderpayToleranceBps: 0, StablecoinPeg: false,
 		RateMarkupBps: 150, WebhookMaxAttempts: 3, WebhookTimeoutSeconds: 5,
 		CheckoutBaseURL: "https://pay.example.com", WalletConnectID: "wc-123",
+		SecurityEmails: false, AlertEmails: true,
+		AlertRecipients: []string{"ops@example.com", "oncall@example.com"}, EmailLocale: domain.LocaleEN,
 	}
 	put, err := s.PutSettings(ctx, want)
 	require.NoError(t, err)
 	assert.Equal(t, want, put)
 	got, err = s.GetSettings(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, want, got, "zero values (tolerance 0, peg false) are kept, not defaulted")
+	assert.Equal(t, want, got, "zero values (tolerance 0, peg false, security e-mails off) are kept, not defaulted")
+
+	// A null / missing recipient list reads as [] and the locale as the default.
+	_, err = d.Pool.Exec(ctx, `UPDATE settings SET value = value || '{"alert_recipients": null, "email_locale": ""}'`)
+	require.NoError(t, err)
+	got, err = s.GetSettings(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{}, got.AlertRecipients)
+	assert.Equal(t, domain.LocaleZH, got.EmailLocale)
 
 	// Fields missing from the stored JSON fall back to defaults.
 	_, err = d.Pool.Exec(ctx, `UPDATE settings SET value = '{"invoice_ttl_seconds": 120}'`)

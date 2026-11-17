@@ -20,6 +20,8 @@
 //     request must carry `X-Requested-With: cryptopay` (CSRF guard).
 //   - Every admin mutation writes an audit log entry whose detail never
 //     contains secrets, API keys, passwords or full RPC URLs.
+//   - Security-relevant account changes are e-mailed to the affected admin
+//     (package notify).
 package api
 
 import (
@@ -34,6 +36,8 @@ import (
 	"cryptopay/internal/config"
 	"cryptopay/internal/domain"
 	"cryptopay/internal/invoice"
+	"cryptopay/internal/mailer"
+	"cryptopay/internal/notify"
 	"cryptopay/internal/rates"
 	"cryptopay/internal/store"
 )
@@ -61,6 +65,9 @@ type Hooks struct {
 	// ChainChanged is called after an admin changed a chain's configuration
 	// (enabled, RPC endpoints, wallet, ...), e.g. to scan it right away.
 	ChainChanged func(chainID string)
+	// EmailKick is called after an e-mail was queued or re-queued, so the
+	// mail dispatcher can send it now instead of at its next poll.
+	EmailKick func()
 }
 
 // Deps are the dependencies of the HTTP layer.
@@ -79,6 +86,12 @@ type Deps struct {
 	Hooks  Hooks
 	// RequestTimeout bounds one request (default DefaultRequestTimeout).
 	RequestTimeout time.Duration
+	// Notifier enqueues security e-mails (nil = none; it is a no-op itself
+	// when e-mail is not configured).
+	Notifier *notify.Service
+	// Mailer sends the "test e-mail" synchronously (nil = e-mail not
+	// configured).
+	Mailer mailer.Sender
 }
 
 // API holds the handlers. Create it with New.
@@ -93,13 +106,16 @@ type API struct {
 	hasher   auth.Hasher
 	hooks    Hooks
 	timeout  time.Duration
+	notifier *notify.Service
+	mailer   mailer.Sender
 
-	limits        Limits
-	merchantLimit *keyedLimiter // per API key
-	checkoutLimit *keyedLimiter // per IP, GET /api/checkout/{id}
-	quoteLimit    *keyedLimiter // per IP, POST /api/checkout/{id}/quote
-	loginLimit    *keyedLimiter // per IP, POST /api/admin/auth/login
-	loginFailures *failureThrottle
+	limits         Limits
+	merchantLimit  *keyedLimiter // per API key
+	checkoutLimit  *keyedLimiter // per IP, GET /api/checkout/{id}
+	quoteLimit     *keyedLimiter // per IP, POST /api/checkout/{id}/quote
+	loginLimit     *keyedLimiter // per IP, POST /api/admin/auth/login
+	loginFailures  *failureThrottle
+	emailTestLimit *keyedLimiter // per user, POST /email/test
 }
 
 // New returns the gateway's HTTP handler.
@@ -124,13 +140,14 @@ func newAPI(d Deps) *API {
 	a := &API{
 		store: d.Store, invoices: d.Invoices, registry: d.Registry, rates: d.Rates, cfg: d.Config,
 		log: d.Logger, now: d.Now, hasher: d.Hasher, hooks: d.Hooks, timeout: d.RequestTimeout,
-		limits: lim,
+		limits: lim, notifier: d.Notifier, mailer: d.Mailer,
 	}
 	a.merchantLimit = newKeyedLimiter(lim.MerchantKey, a.now)
 	a.checkoutLimit = newKeyedLimiter(lim.CheckoutGet, a.now)
 	a.quoteLimit = newKeyedLimiter(lim.CheckoutQuote, a.now)
 	a.loginLimit = newKeyedLimiter(lim.LoginIP, a.now)
 	a.loginFailures = newFailureThrottle(lim.LoginFailures, lim.LoginWindow, a.now)
+	a.emailTestLimit = newKeyedLimiter(lim.EmailTest, a.now)
 	return a
 }
 

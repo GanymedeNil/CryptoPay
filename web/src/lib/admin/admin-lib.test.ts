@@ -7,7 +7,8 @@ import { chainFixture, walletFixture } from "@/test/admin";
 import { chainHealth, isMaskedRpcUrl, isRpcUrl, notPayableReasons, receivesPayments, rpcEnvName, splitByNetwork } from "./chains";
 import { applyFieldErrors, describeError, errorKind } from "./errors";
 import { addressLink, fillExplorerTemplate, safeHttpUrl, txLink } from "./explorer";
-import { formToSettings, settingsSchema, settingsToForm } from "./settings-form";
+import { formToSettings, recipientProblem, settingsSchema, settingsToForm } from "./settings-form";
+import { EMAIL_KINDS, emailKindLabel } from "./two-factor";
 import { canWrite, isOwner } from "./roles";
 import { buildTimeline } from "./timeline";
 import { intParam, patchSearchParams } from "./url-state";
@@ -279,5 +280,39 @@ describe("invoice timeline", () => {
     expect(buildTimeline({ ...base, status: "expired", paid_at: null }).find((e) => e.kind === "expired")?.tone).toBe("ended");
     expect(buildTimeline({ ...base, status: "underpaid", paid_at: null }).find((e) => e.kind === "underpaid")?.tone).toBe("danger");
     expect(buildTimeline({ ...base, status: "cancelled", paid_at: null }).find((e) => e.kind === "cancelled")?.tone).toBe("ended");
+  });
+});
+
+describe("e-mail kinds", () => {
+  it("labels every documented e-mail kind", () => {
+    expect(EMAIL_KINDS).toHaveLength(11);
+    expect(new Set(EMAIL_KINDS.map((k) => k.kind)).size).toBe(11);
+    expect(emailKindLabel(t, "alert.scanner_failing")).toBe("Scanner failing");
+    expect(emailKindLabel(t, "security.unknown_future_kind")).toBe("security.unknown_future_kind");
+    for (const k of EMAIL_KINDS) expect(emailKindLabel(t, k.kind)).not.toContain("admin.");
+  });
+});
+
+describe("settings form · e-mail", () => {
+  it("round-trips the new settings and validates recipients", () => {
+    const s = { ...SETTINGS, alert_emails: true, alert_recipients: ["ops@example.com"], email_locale: "en" as const };
+    const form = settingsToForm(s);
+    expect(form).toMatchObject({ alert_emails: true, alert_recipients: ["ops@example.com"], email_locale: "en" });
+    expect(formToSettings(form)).toEqual(s);
+    expect(formToSettings({ ...form, alert_recipients: [" cfo@example.com "] }).alert_recipients).toEqual(["cfo@example.com"]);
+
+    const schema = settingsSchema(t);
+    expect(schema.safeParse(form).success).toBe(true);
+    const dup = schema.safeParse({ ...form, alert_recipients: ["a@b.co", "A@b.co"] });
+    expect(dup.error?.issues[0].message).toBe("This address is already in the list");
+    const many = schema.safeParse({ ...form, alert_recipients: Array.from({ length: 11 }, (_, i) => `u${i}@example.com`) });
+    expect(many.error?.issues[0].message).toBe("At most 10 recipients");
+    const invalid = schema.safeParse({ ...form, alert_recipients: ["nope"] });
+    expect(invalid.error?.issues[0].message).toBe("Enter a valid email address");
+
+    expect(recipientProblem(t, [], "ops@example.com")).toBeNull();
+    expect(recipientProblem(t, ["ops@example.com"], "OPS@example.com")).toBe("This address is already in the list");
+    expect(recipientProblem(t, [], "ops")).toBe("Enter a valid email address");
+    expect(recipientProblem(t, Array.from({ length: 10 }, (_, i) => `u${i}@example.com`), "x@example.com")).toBe("At most 10 recipients");
   });
 });

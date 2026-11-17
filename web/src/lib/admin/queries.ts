@@ -12,6 +12,7 @@ import { adminApi } from "@/lib/api/admin";
 import type {
   AdminInvoiceQuery,
   AuditLogQuery,
+  EmailOutboxQuery,
   MerchantQuery,
   TransferQuery,
   WebhookEventQuery,
@@ -57,6 +58,12 @@ export const adminKeys = {
   auditLogs: {
     all: ["admin", "audit-logs"] as const,
     list: (q: AuditLogQuery) => ["admin", "audit-logs", "list", q] as const,
+  },
+  email: {
+    all: ["admin", "email"] as const,
+    status: ["admin", "email", "status"] as const,
+    outbox: (q: EmailOutboxQuery) => ["admin", "email", "outbox", q] as const,
+    message: (id: string) => ["admin", "email", "message", id] as const,
   },
 };
 
@@ -184,6 +191,33 @@ export function useAuditLogs(q: AuditLogQuery) {
     queryKey: adminKeys.auditLogs.list(q),
     queryFn: ({ signal }) => adminApi.listAuditLogs(q, { signal }),
     placeholderData: keepPreviousData,
+  });
+}
+
+export function useEmailStatus() {
+  return useQuery({
+    queryKey: adminKeys.email.status,
+    queryFn: ({ signal }) => adminApi.getEmailStatus({ signal }),
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useEmailOutbox(q: EmailOutboxQuery, enabled = true) {
+  return useQuery({
+    queryKey: adminKeys.email.outbox(q),
+    queryFn: ({ signal }) => adminApi.listEmailOutbox(q, { signal }),
+    placeholderData: keepPreviousData,
+    // Pending messages go out within seconds: keep the list live while any are queued.
+    refetchInterval: (query) => (query.state.data?.items.some((m) => m.status === "pending") ? 10_000 : false),
+    enabled,
+  });
+}
+
+/** One outbox message with its text body (expanded row). */
+export function useEmailMessage(id: string) {
+  return useQuery({
+    queryKey: adminKeys.email.message(id),
+    queryFn: ({ signal }) => adminApi.getEmailMessage(id, { signal }),
   });
 }
 

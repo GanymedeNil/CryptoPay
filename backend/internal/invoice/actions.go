@@ -136,7 +136,9 @@ func betterPaidQuote(a, b *domain.Quote) bool {
 // A pending transfer only counts as received until the scanner confirms it.
 func (s *Service) AssignTransfer(ctx context.Context, transferID, invoiceID uuid.UUID) (domain.Transfer, error) {
 	var out domain.Transfer
+	var ev Evaluation
 	err := s.store.WithTx(ctx, func(tx *store.Store) error {
+		ev = Evaluation{} // WithTx may run this more than once
 		// Lock order: the invoice first (as everywhere), then the transfer.
 		if _, err := tx.GetInvoiceForUpdate(ctx, invoiceID); err != nil {
 			return mapNotFound(err)
@@ -178,12 +180,13 @@ func (s *Service) AssignTransfer(ctx context.Context, transferID, invoiceID uuid
 			}
 			return mapNotFound(err)
 		}
-		_, err = s.Reevaluate(ctx, tx, invoiceID)
+		ev, err = s.Reevaluate(ctx, tx, invoiceID)
 		return err
 	})
 	if err != nil {
 		return domain.Transfer{}, err
 	}
+	s.Committed(ctx, ev)
 	s.log.InfoContext(ctx, "transfer assigned manually", "transfer_id", transferID, "invoice_id", invoiceID)
 	return out, nil
 }
@@ -237,9 +240,10 @@ func (s *Service) ExpireDue(ctx context.Context) (ExpireResult, error) {
 			var batch []domain.Invoice
 			var examined, changed int
 			var failed []error
+			var evs []Evaluation
 			err := s.store.WithTx(ctx, func(tx *store.Store) error {
 				// Reset per attempt: WithTx may retry the whole function.
-				examined, changed, failed = 0, 0, nil
+				examined, changed, failed, evs = 0, 0, nil, nil
 				var err error
 				batch, err = tx.ListInvoicesToExpireAfter(ctx, now, after.ExpiresAt, after.ID, s.expireBatch, status)
 				if err != nil {
@@ -262,6 +266,7 @@ func (s *Service) ExpireDue(ctx context.Context) (ExpireResult, error) {
 					}
 					if ev.StatusChanged {
 						changed++
+						evs = append(evs, ev)
 					}
 				}
 				return nil
@@ -269,6 +274,7 @@ func (s *Service) ExpireDue(ctx context.Context) (ExpireResult, error) {
 			if err != nil {
 				return res, fmt.Errorf("invoice: expire due invoices: %w", err)
 			}
+			s.Committed(ctx, evs...)
 			res.Examined += examined
 			res.Changed += changed
 			for _, ferr := range failed {

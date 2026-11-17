@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"cryptopay/internal/alert"
 	"cryptopay/internal/auth"
 	"cryptopay/internal/domain"
 	"cryptopay/internal/store"
@@ -49,6 +50,7 @@ type Dispatcher struct {
 	rt           http.RoundTripper // custom transport (tests); bypasses the guard
 	lookup       lookupFunc
 	client       *http.Client
+	notifier     alert.Notifier // told about events that reached status failed
 }
 
 // Option configures a Dispatcher.
@@ -98,6 +100,10 @@ func WithJitter(f float64) Option {
 // default transport's dialer, so a custom transport bypasses it; intended
 // for tests.
 func WithTransport(rt http.RoundTripper) Option { return func(x *Dispatcher) { x.rt = rt } }
+
+// WithNotifier reports every event that reaches its final failed state,
+// after it was recorded (nil = nobody). n must not block (alert.Queue).
+func WithNotifier(n alert.Notifier) Option { return func(x *Dispatcher) { x.notifier = n } }
 
 // WithResolver replaces the DNS lookup used by the SSRF-guarded dialer.
 func WithResolver(r *net.Resolver) Option {
@@ -276,10 +282,17 @@ func (d *Dispatcher) fail(ctx context.Context, e domain.WebhookEvent, att store.
 	}
 	d.log.Warn("webhook attempt failed", "event", e.ID, "merchant", e.MerchantID, "attempt", attempt,
 		"status", att.StatusCode, "error", att.Error, "permanent", permanent || attempt >= maxAttempts)
-	return d.mark(ctx, e, func(c context.Context) error {
-		_, err := d.store.MarkWebhookFailed(c, e.ID, att, next, maxAttempts)
+	var updated domain.WebhookEvent
+	out := d.mark(ctx, e, func(c context.Context) error {
+		var err error
+		updated, err = d.store.MarkWebhookFailed(c, e.ID, att, next, maxAttempts)
 		return err
 	}, outcomeFailed)
+	if out == outcomeFailed && updated.Status == domain.WebhookFailed {
+		// Recorded (committed): the event will not be retried any more.
+		alert.Notify(d.notifier, d.log, func(n alert.Notifier) { n.WebhookFailed(ctx, updated) })
+	}
+	return out
 }
 
 func (d *Dispatcher) mark(ctx context.Context, e domain.WebhookEvent, f func(context.Context) error, ok outcome) outcome {
