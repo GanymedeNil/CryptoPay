@@ -1,16 +1,16 @@
 # CryptoPay
 
-CryptoPay 是一个**自托管、非托管（non-custodial）**的加密货币收款网关：商户通过 REST API 创建账单（invoice），把顾客重定向到收银台页面；顾客用钱包付款；网关只**读取**区块链来发现入账，确认后通过带签名的 webhook 通知商户。服务器上**从不保存私钥**——收款地址由扩展公钥（xpub）派生，或使用一个固定地址。
+CryptoPay is a **self-hosted, non-custodial** cryptocurrency payment gateway. A merchant creates an invoice through the REST API and redirects the customer to the checkout page. The customer pays from a wallet. The gateway only **reads** the blockchain to detect the payment, and once it is confirmed it notifies the merchant with a signed webhook. **No private key is ever stored on the server**: receiving addresses are derived from an extended public key (xpub), or a single static address is used.
 
-- 后端：Go（`backend/`，模块 `cryptopay`）—— HTTP API、链扫描器、webhook 投递
-- 前端：Next.js（`web/`）—— 收银台 `/pay/{id}` 与管理后台 `/admin`
-- 数据库：PostgreSQL
+- Backend: Go (`backend/`, module `cryptopay`) — HTTP API, chain scanner, webhook delivery
+- Frontend: Next.js (`web/`) — the checkout at `/pay/{id}` and the admin console at `/admin`
+- Database: PostgreSQL
 
-## 支持的币种与网络
+## Supported coins and networks
 
-稳定币约占加密支付交易量的 **60%**（以 USDT 为首，其中 Tron 上的 USDT 最多，其次是 USDC）；原生币中 BTC、LTC、ETH、TRX 在各支付处理商（CoinGate / CoinsBee / NOWPayments 2025–2026 年度统计）中使用最多。内置目录据此选择：
+Stablecoins account for roughly **60%** of crypto payment volume (led by USDT, most of it on Tron, followed by USDC). Among native coins, BTC, LTC, ETH and TRX are used most across payment processors (CoinGate / CoinsBee / NOWPayments statistics for 2025–2026). The built-in catalog follows that:
 
-| 链族 | 网络 | 资产 | 默认确认数 |
+| Family | Network | Assets | Default confirmations |
 |---|---|---|---|
 | EVM | Ethereum | ETH, USDT, USDC, PYUSD | 12 |
 | EVM | BNB Smart Chain | BNB, USDT, USDC | 15 |
@@ -21,98 +21,98 @@ CryptoPay 是一个**自托管、非托管（non-custodial）**的加密货币�
 | UTXO | Bitcoin | BTC | 2 |
 | UTXO | Litecoin | LTC | 6 |
 | Solana | Solana | SOL, USDT, USDC, PYUSD | finalized |
-| 测试网 | Sepolia · Tron Nile · Bitcoin Testnet · Solana Devnet | ETH/USDC/PYUSD · TRX/USDT · BTC · SOL/USDC/PYUSD | — |
+| Testnets | Sepolia · Tron Nile · Bitcoin Testnet · Solana Devnet | ETH/USDC/PYUSD · TRX/USDT · BTC · SOL/USDC/PYUSD | — |
 
-主网默认启用、测试网默认关闭；一条链只有**有收款钱包**（链的默认钱包，或某个商户自己的钱包）后才可支付。管理后台可以添加自定义代币（ERC-20 / TRC-20 / SPL）。
+Mainnets are enabled by default and testnets are disabled. A chain can take payments only once it has a **receiving wallet** (the chain's default wallet, or a merchant's own wallet). Custom tokens (ERC-20 / TRC-20 / SPL) can be added in the admin console.
 
-## 架构
+## Architecture
 
 ```
-商户后端 ──(REST, API key)──▶ ┌────────────┐ ◀──(cookie 会话)── 管理后台 (Next.js /admin)
-                              │ Go gateway │
-顾客浏览器 ──(公开 REST)─────▶ │ (backend/) │ ──(HMAC 签名 webhook)──▶ 商户后端
-  收银台 (Next.js /pay/{id})   └─────┬──────┘
-                                     │ 只读 RPC 扫描
-             EVM · Tron · Bitcoin/Litecoin · Solana              PostgreSQL
+Merchant backend ──(REST, API key)──▶ ┌────────────┐ ◀──(session cookie)── Admin console (Next.js /admin)
+                                      │ Go gateway │
+Customer browser ──(public REST)────▶ │ (backend/) │ ──(HMAC-signed webhook)──▶ Merchant backend
+  Checkout (Next.js /pay/{id})        └─────┬──────┘
+                                            │ read-only RPC scanning
+              EVM · Tron · Bitcoin/Litecoin · Solana              PostgreSQL
 ```
 
-- [`docs/api.md`](docs/api.md)：HTTP 接口契约（前后端唯一事实来源）
-- [`docs/architecture.md`](docs/architecture.md)：架构、账单生命周期、扫描器、webhook
-- [`web/README.md`](web/README.md)：前端说明
+- [`docs/api.md`](docs/api.md): the HTTP contract (the single source of truth shared by frontend and backend)
+- [`docs/architecture.md`](docs/architecture.md): architecture, invoice lifecycle, scanner, webhooks
+- [`web/README.md`](web/README.md): frontend notes
 
-浏览器只访问 Next.js（同源），由它把 `/api/*` 代理到 Go 后端。
+The browser only talks to Next.js (same origin), which proxies `/api/*` to the Go backend.
 
-## 快速开始（Docker）
+## Quick start (Docker)
 
-需要 Docker（含 Compose v2）。
+Requires Docker with Compose v2.
 
 ```bash
 cp .env.example .env
-# 编辑 .env：至少修改 APP_SECRET（openssl rand -base64 48）和 ADMIN_PASSWORD
-docker compose up --build -d        # 或 make up
-docker compose ps                   # 等待 backend 显示 healthy
+# Edit .env: at the very least change APP_SECRET (openssl rand -base64 48) and ADMIN_PASSWORD
+docker compose up --build -d        # or: make up
+docker compose ps                   # wait until backend shows healthy
 ```
 
-- 管理后台：http://localhost:3000/admin（使用 `.env` 里的 `ADMIN_EMAIL` / `ADMIN_PASSWORD` 登录；首次启动且数据库中没有管理员时自动创建 owner）
-- 后端健康检查：http://127.0.0.1:8080/healthz（后端端口只绑定在 127.0.0.1）
-- 端口被占用时可在 `.env` 中修改 `WEB_PORT` / `BACKEND_PORT`
-- 开发演示数据：`make seed-dev`——创建演示商户和 API key（只显示一次），并把由公开的 Hardhat 测试助记词派生的 **仅供测试** 的 xpub 钱包设为 Sepolia / Tron Nile / Bitcoin Testnet 的默认钱包并启用这些测试网（`APP_ENV=production` 时拒绝运行；**切勿向这些地址发送真实资产**）
-- 在测试网上手动走一遍下单、付款、确认和 Webhook：见 [docs/testnet-walkthrough.md](docs/testnet-walkthrough.md)（本地 Webhook 接收器：`scripts/webhook-receiver.py`）
-- 本地邮件：compose 自带 [Mailpit](https://mailpit.axllent.org/)，网关发出的所有邮件（安全通知、告警、测试邮件）都会被它截获，在 http://localhost:8025 查看（端口可用 `MAILPIT_PORT` 修改）；Mailpit 只在本机收信，**不会**把邮件真正发出去
-- 停止：`make down`；删除数据卷：`make clean`
+- Admin console: http://localhost:3000/admin (sign in with `ADMIN_EMAIL` / `ADMIN_PASSWORD` from `.env`; on first start, when the database has no admin yet, an owner is created automatically)
+- Backend health check: http://127.0.0.1:8080/healthz (the backend port is bound to 127.0.0.1 only)
+- If a port is already taken, change `WEB_PORT` / `BACKEND_PORT` in `.env`
+- Development demo data: `make seed-dev` creates a demo merchant and an API key (shown only once), assigns **test-only** xpub wallets derived from the public Hardhat test mnemonic as the default wallets of Sepolia / Tron Nile / Bitcoin Testnet, and enables those testnets (it refuses to run when `APP_ENV=production`; **never send real assets to these addresses**)
+- To walk through an order, payment, confirmation and webhook on a testnet by hand, see [docs/testnet-walkthrough.md](docs/testnet-walkthrough.md) (local webhook receiver: `scripts/webhook-receiver.py`)
+- Local email: compose ships with [Mailpit](https://mailpit.axllent.org/), which catches every email the gateway sends (security notices, alerts, test emails). Read them at http://localhost:8025 (change the port with `MAILPIT_PORT`). Mailpit only receives mail locally; it does **not** deliver anything to the outside world
+- Stop: `make down`; delete the data volume: `make clean`
 
-不使用 Docker 时：`cd backend && go run ./cmd/gateway`（需要 `DATABASE_URL`、`APP_SECRET`），前端见 `web/README.md`。
+Without Docker: `cd backend && go run ./cmd/gateway` (needs `DATABASE_URL` and `APP_SECRET`); for the frontend see `web/README.md`.
 
-## 首次运行：在管理后台完成配置
+## First run: set up the admin console
 
-1. **创建收款钱包**（钱包 → 新建）
-   - EVM / Tron / Bitcoin / Litecoin：粘贴**账户级扩展公钥**（EVM `m/44'/60'/0'`，Tron `m/44'/195'/0'`，BTC `m/84'/0'/0'` 的 `xpub`/`zpub`，测试网 `tpub`/`vpub`）。保存前可以“预览”前 3 个派生地址，请与自己的钱包软件核对。每张账单使用一个新地址 `xpub/0/index`。
-   - Solana（以及不想用 xpub 的情况）：使用**固定地址（static）**。同一地址上的账单用**唯一金额**区分（金额末位会被微调），顾客必须精确支付显示的金额。
-   - 粘贴私钥（`xprv`…）会被明确拒绝。
-   - 同一个 xpub（或同一族的同一个固定地址）只能登记一次：两条记录用同一把钥匙会给不同商户派生出相同的地址，后台会返回 409。要给多个商户各自独立的 xpub 钱包，请使用不同的账户（如 EVM `m/44'/60'/1'`、`m/44'/60'/2'`）或不同的助记词。
-2. **决定资金进哪个钱包**——两种方式可以混用：
-   - **链的默认钱包**（链 → 选择链 → 默认收款钱包）：所有没有自己钱包的商户都收款到这里。只有一个商户、或所有商户本来就是同一家公司（资金进同一个钱包）时，只设默认钱包即可。确认链已启用；“可支付”列变为是。
-   - **商户专属钱包**（商户 → 选择商户 → 收款钱包 → 为某条链选择钱包）：该商户在这条链上的账单收款到它自己的钱包，覆盖默认钱包。平台上的多个商户是**不同主体、资金必须分开**时使用。没有默认钱包的链，只要有商户设置了专属钱包，也会被扫描，但只对这些商户可支付。
-   - 规则：某商户在某条链上的收款钱包 = 它的专属钱包，否则 = 链的默认钱包，否则该链对这个商户不可支付（`GET /api/v1/assets` 与收银台里都不会出现）。修改或移除钱包只影响之后新生成的报价：已经显示给顾客的未付账单仍使用原来的地址。
-3. **配置商用 RPC**（链 → RPC）。内置默认值是免费公共节点，只适合开发测试；生产环境请为每条链填写 Alchemy / Infura / QuickNode（EVM）、TronGrid（`?apikey=`）、Helius（Solana）、GetBlock 或自建节点（BTC/LTC）等地址，可用“测试 RPC”检查。RPC 地址在数据库中加密存储，界面只显示 `协议://主机/…`。
-4. **创建商户与 API key**（商户 → 新建）。webhook 签名密钥和 API key 明文**只显示一次**，请立即保存到商户后端。需要独立收款时，在商户详情页的“收款钱包”里为各条链选择该商户自己的钱包（见第 2 步）。
-5. 按需调整**设置**：账单有效期、宽限期、少付容差、汇率加价、`checkout_base_url`（收银台对外地址，例如 `https://pay.example.com`）、WalletConnect project id 等。
-6. **保护管理员账户**：在“账户安全”中启用两步验证并保存恢复码；配置好 SMTP 后在“设置 → 邮件通知”中发送一封测试邮件，并按需开启运营告警（见下文“管理员账户安全”）。
+1. **Create a receiving wallet** (Receiving wallets → New)
+   - EVM / Tron / Bitcoin / Litecoin: paste the **account-level extended public key** (EVM `m/44'/60'/0'`, Tron `m/44'/195'/0'`, BTC `m/84'/0'/0'` as `xpub`/`zpub`, `tpub`/`vpub` on testnets). Before saving you can preview the first 3 derived addresses; compare them with your own wallet software. Every invoice gets a fresh address `xpub/0/index`.
+   - Solana (or whenever you do not want to use an xpub): use a **static address**. Invoices on the same address are told apart by a **unique amount** (the last digits of the amount are nudged), so the customer must pay exactly the amount shown.
+   - Pasting a private key (`xprv`…) is explicitly rejected.
+   - The same xpub (or the same static address within one chain family) can be registered only once. Two records sharing one key would derive identical addresses for different merchants, so the console returns 409. To give several merchants independent xpub wallets, use different accounts (for example EVM `m/44'/60'/1'`, `m/44'/60'/2'`) or different mnemonics.
+2. **Decide which wallet receives the money.** The two options can be mixed:
+   - **The chain's default wallet** (Chains & RPC → pick a chain → Default receiving wallet): every merchant without a wallet of their own is paid here. If there is only one merchant, or all merchants are the same company and the funds go to the same wallet, setting only the default wallet is enough. Make sure the chain is enabled; its "Payable" column then shows yes.
+   - **A merchant's own wallet** (Merchants → pick a merchant → Receiving wallets → choose a wallet for a chain): that merchant's invoices on that chain are paid to their own wallet, overriding the default. Use it when the merchants on your platform are **separate legal entities whose funds must be kept apart**. A chain without a default wallet is still scanned as soon as one merchant has a wallet of their own on it, but it is payable only for those merchants.
+   - The rule: a merchant's receiving wallet on a chain is their own wallet if they have one, otherwise the chain's default wallet, otherwise the chain is not payable for that merchant (it appears neither in `GET /api/v1/assets` nor on the checkout). Changing or removing a wallet only affects quotes created afterwards: unpaid invoices already shown to a customer keep using the original address.
+3. **Configure a commercial RPC** (Chains & RPC → RPC). The built-in defaults are free public nodes, good only for development and testing. In production, enter an Alchemy / Infura / QuickNode (EVM), TronGrid (`?apikey=`), Helius (Solana), GetBlock or self-hosted node (BTC/LTC) URL for every chain, and use "Test" to check it. RPC URLs are stored encrypted in the database and the UI only shows `scheme://host/…`.
+4. **Create a merchant and an API key** (Merchants → New). The webhook signing secret and the API key are shown in clear text **only once**, so save them to the merchant's backend right away. If the merchant needs separate funds, choose that merchant's own wallet for each chain under "Receiving wallets" on the merchant page (see step 2).
+5. Adjust **Settings** as needed: invoice lifetime, grace period, underpayment tolerance, rate markup, `checkout_base_url` (the public address of the checkout, for example `https://pay.example.com`), the WalletConnect project id, and so on.
+6. **Protect the admin accounts**: turn on two-step verification under "Account security" and keep the recovery codes; once SMTP is configured, send a test email from "Settings → Email notifications" and turn on operational alerts if you want them (see "Admin account security" below).
 
-## 管理员账户安全
+## Admin account security
 
-### 两步验证（TOTP）
+### Two-step verification (TOTP)
 
-- 每位管理员都可以在 **账户安全**（右上角用户菜单或侧边栏）中启用两步验证：输入当前密码 → 用验证器应用（Google Authenticator、1Password、Microsoft Authenticator、Authy 等）扫描二维码，或手动输入分组显示的密钥 → 输入 6 位验证码确认。算法为 RFC 6238（HMAC-SHA1、6 位、30 秒），允许前后各 1 个时间窗口，同一个验证码只能使用一次。
-- 启用后登录分两步：先输入邮箱和密码，再输入验证器中的 6 位验证码（5 分钟内完成，最多输错 5 次，之后需重新登录；同一账户多次输错会被暂时阻止）。启用两步验证会退出该账户在其他设备上的会话。
-- **恢复码**：启用时会显示 10 个一次性恢复码（形如 `abcde-fghjk`），**只显示这一次**，请复制或下载为 `.txt` 并离线保存。手机丢失时，可在登录第二步改用一个恢复码；每个恢复码只能用一次，使用后会收到邮件告知剩余数量。可以在“账户安全”中凭密码和当前验证码重新生成一组（旧的全部失效）。
-- 验证器密钥用 `APP_SECRET` 加密存储，恢复码和登录挑战令牌只保存 SHA-256 哈希；这些内容不会出现在审计日志、应用日志或任何邮件中。
-- **强制所有管理员启用**：在“设置 → 安全”中打开“要求两步验证”（只有自己已启用两步验证的管理员才能打开）。打开后，尚未启用的管理员登录后只能看到设置两步验证的流程，完成前其他所有接口都返回 `403 two_factor_setup_required`；开启期间任何人都不能关闭自己的两步验证。
-- **重置**：owner 可以在“用户”页面重置其他用户的两步验证（删除密钥和恢复码，并退出该用户的所有会话，用户会收到邮件）；不能重置自己的——请在“账户安全”中关闭。
-- **紧急恢复（break glass）**：如果唯一的 owner 丢失了验证器且没有恢复码，在服务器上执行：
+- Every admin can enable two-step verification under **Account security** (the user menu in the top right, or the sidebar): enter the current password → scan the QR code with an authenticator app (Google Authenticator, 1Password, Microsoft Authenticator, Authy, …) or type the grouped secret by hand → enter the 6-digit code to confirm. The algorithm is RFC 6238 (HMAC-SHA1, 6 digits, 30 seconds); one time step either side is accepted, and a code can be used only once.
+- Once enabled, signing in takes two steps: email and password first, then the 6-digit code from the authenticator (within 5 minutes, at most 5 wrong attempts, after which the admin has to sign in again; repeated failures on one account are blocked for a while). Enabling two-step verification signs the account out of its sessions on other devices.
+- **Recovery codes**: enabling shows 10 one-time recovery codes (shaped like `abcde-fghjk`) **only once**. Copy them or download the `.txt` and keep them offline. If the phone is lost, use one of them on the second sign-in step instead; each code works once, and an email tells the admin how many remain after use. An admin can generate a new set under "Account security" with the password and a current code (all the old ones stop working).
+- Authenticator secrets are stored encrypted with `APP_SECRET`; recovery codes and sign-in challenge tokens are stored only as SHA-256 hashes. None of these ever appears in the audit log, the application log or any email.
+- **Require it for every admin**: turn on "Require two-step verification for every admin" under "Settings → Security" (only an admin who already has two-step verification can turn it on). While it is on, admins who have not set it up can only see the setup flow after signing in, and every other endpoint returns `403 two_factor_setup_required` until they finish; nobody can turn off their own two-step verification meanwhile.
+- **Reset**: an owner can reset another user's two-step verification on the Admins page (it deletes the secret and recovery codes, signs the user out of every session and emails them). Owners cannot reset their own; turn it off under "Account security" instead.
+- **Break glass**: if the only owner has lost the authenticator and has no recovery code, run this on the server:
 
   ```bash
   docker compose exec backend /usr/local/bin/gateway reset-2fa --email owner@example.com
   ```
 
-  该命令删除此用户的两步验证、退出其所有会话、写入审计日志（操作人 `cli:reset-2fa`），并在配置了邮件时通知该用户。之后可以只用密码登录；若开启了“要求两步验证”，登录后需重新设置。
+  The command removes that user's two-step verification, signs them out of every session, writes an audit log entry (actor `cli:reset-2fa`) and, if email is configured, notifies the user. They can then sign in with the password alone; if "Require two-step verification" is on, they have to set it up again after signing in.
 
-### 会话管理
+### Session management
 
-“账户安全”页列出自己当前所有有效会话（登录时的 IP 与浏览器，标出当前设备），可以退出单个会话或一次退出其他所有会话。修改密码、启用两步验证也会退出其他会话。
+The "Account security" page lists all of your active sessions (IP and browser at sign-in, with the current device marked). You can sign out a single session or every other session at once. Changing the password or enabling two-step verification also signs out the other sessions.
 
-### 邮件通知
+### Email notifications
 
-配置 SMTP（见下文“配置参考”与 `.env.example`）后，网关通过发件箱（失败按 `min(2^n × 30s, 2h)` 重试，最多 8 次）发送：
+Once SMTP is configured (see "Configuration reference" below and `.env.example`), the gateway sends email through an outbox (failures are retried after `min(2^n × 30s, 2h)`, at most 8 times):
 
-- **安全通知**（发给相关管理员本人，“设置 → 邮件通知 → 安全通知”控制，默认开启）：从未用过的 IP 登录（账户首次登录不发）、多次登录失败被暂时阻止（每个账户每小时最多一封）、密码被修改（本人或 owner）、两步验证启用 / 关闭 / 被 owner 重置、恢复码重新生成、使用恢复码登录（含剩余数量）、账户被创建、角色变更、停用 / 重新启用。
-- **运营告警**（默认关闭；收件人为“告警收件人”，留空则发给所有启用中的 owner）：Webhook 事件最终投递失败（每个商户每小时最多一封）、收到无法匹配的转账（每条链每小时最多一封）、账单变为少付（每张账单一封）、某条链的扫描器连续失败 10 分钟以上（每条链每 6 小时最多一封）。告警在数据库事务提交之后异步产生，邮件发送失败或变慢不会影响收款处理。
-- 邮件语言由“邮件语言”设置决定（中文 / English）；所有时间以 UTC 显示。邮件中不包含任何密码、密钥、验证码或令牌。
-- 后台“邮件记录”页面可查看发件箱、按状态 / 类型筛选、查看正文，并重试失败的邮件；“设置 → 邮件通知”可以发送测试邮件并显示 SMTP 返回的错误。
+- **Security notices** (sent to the admin concerned; controlled by "Settings → Email notifications → Security emails", on by default): sign-in from a never-seen IP (not sent for an account's first sign-in), repeated failed sign-ins that temporarily blocked the account (at most one email per account per hour), password changed (by the admin or an owner), two-step verification enabled / disabled / reset by an owner, recovery codes regenerated, sign-in with a recovery code (including how many remain), account created, role changed, deactivated / reactivated.
+- **Operational alerts** (off by default; recipients are the "Alert recipients", or every active owner when the list is empty): a webhook event finally failed to deliver (at most one email per merchant per hour), a transfer that cannot be matched arrived (at most one per chain per hour), an invoice became underpaid (one per invoice), a chain's scanner has been failing for more than 10 minutes (at most one per chain every 6 hours). Alerts are raised asynchronously after the database transaction commits, so a failing or slow email never affects payment processing.
+- The email language follows the "Email language" setting (Chinese / English); all times are shown in UTC. Emails never contain passwords, secrets, verification codes or tokens.
+- The "Email log" page shows the outbox, filters it by status / type, shows message bodies and retries failed emails; "Settings → Email notifications" can send a test email and shows the error SMTP returned.
 
-## 商户接入
+## Merchant integration
 
-### 1. 创建账单
+### 1. Create an invoice
 
 ```bash
 curl -X POST https://pay.example.com/api/v1/invoices \
@@ -129,18 +129,18 @@ curl -X POST https://pay.example.com/api/v1/invoices \
       }'
 ```
 
-- 返回 `201` 和 `Invoice`；同一 `order_id` 以相同金额和币种重复提交返回 `200` 与原账单（幂等），金额或币种不同返回 `409`。
-- `currency` 可以是法币代码（USD、EUR、CNY…）或已启用资产的符号（如 `USDT`）。
-- 可选 `asset_id`（如 `usdt-tron`）直接锁定付款资产；`GET /api/v1/assets` 列出当前可支付资产。
-- 金额一律是**字符串**（`"25.00"`），不要用浮点数。
+- Returns `201` and an `Invoice`. Submitting the same `order_id` again with the same amount and currency returns `200` and the original invoice (idempotent); a different amount or currency returns `409`.
+- `currency` can be a fiat code (USD, EUR, CNY…) or the symbol of an enabled asset (such as `USDT`).
+- The optional `asset_id` (for example `usdt-tron`) pins the payment asset; `GET /api/v1/assets` lists the assets that can currently be paid.
+- Amounts are always **strings** (`"25.00"`). Never use floating-point numbers.
 
-### 2. 把顾客重定向到 `checkout_url`
+### 2. Redirect the customer to `checkout_url`
 
-`checkout_url` 形如 `https://pay.example.com/pay/{invoice_id}`。收银台让顾客选择币种和网络，显示地址、金额、二维码和钱包按钮，并实时显示确认进度；付款完成后跳回 `success_url`。
+`checkout_url` looks like `https://pay.example.com/pay/{invoice_id}`. The checkout lets the customer choose a coin and a network, shows the address, the amount, a QR code and wallet buttons, and follows the confirmation progress live. When the payment completes it redirects to `success_url`.
 
-### 3. 接收并验证 webhook
+### 3. Receive and verify the webhook
 
-请求体为 `{ "id", "type", "created_at", "data": Invoice }`，事件类型：`invoice.payment_detected`、`invoice.confirming`、`invoice.paid`、`invoice.underpaid`、`invoice.expired`、`invoice.cancelled`。签名为 `hex(HMAC-SHA256(secret, timestamp + "." + 原始请求体))`：
+The body is `{ "id", "type", "created_at", "data": Invoice }`. Event types: `invoice.payment_detected`, `invoice.confirming`, `invoice.paid`, `invoice.underpaid`, `invoice.expired`, `invoice.cancelled`. The signature is `hex(HMAC-SHA256(secret, timestamp + "." + raw request body))`:
 
 ```go
 func cryptopayWebhook(w http.ResponseWriter, r *http.Request) {
@@ -149,7 +149,7 @@ func cryptopayWebhook(w http.ResponseWriter, r *http.Request) {
 
 	mac := hmac.New(sha256.New, []byte(webhookSecret)) // whsec_...
 	fmt.Fprintf(mac, "%d.", ts)
-	mac.Write(body) // 原始字节，不要重新序列化
+	mac.Write(body) // the raw bytes; do not re-serialize
 	want := hex.EncodeToString(mac.Sum(nil))
 
 	if !hmac.Equal([]byte(want), []byte(r.Header.Get("X-CryptoPay-Signature"))) ||
@@ -163,93 +163,93 @@ func cryptopayWebhook(w http.ResponseWriter, r *http.Request) {
 		Data json.RawMessage `json:"data"`
 	}
 	_ = json.Unmarshal(body, &ev)
-	// 按 ev.ID（= X-CryptoPay-Delivery）去重后再处理，然后返回任意 2xx。
+	// Deduplicate on ev.ID (= X-CryptoPay-Delivery) before processing, then return any 2xx.
 	w.WriteHeader(http.StatusNoContent)
 }
 ```
 
-- 投递语义是**至少一次（at-least-once）**：非 2xx、超时会按 `min(2^n × 15s, 6h)` 退避重试，直到设置的最大次数；同一事件可能收到多次，**必须按事件 `id` 去重**。
-- 多个事件可能并行投递，**到达顺序不保证**：以 `data.status`（以及 `data.updated_at`）为准，只在 `invoice.paid` 时发货。
-- 后台可以查看每次投递的状态码与响应，并手动重试。
+- Delivery is **at-least-once**: a non-2xx response or a timeout is retried with the backoff `min(2^n × 15s, 6h)` up to the configured maximum number of attempts. The same event can arrive more than once, so you **must deduplicate on the event `id`**.
+- Several events can be delivered in parallel and **their arrival order is not guaranteed**: trust `data.status` (and `data.updated_at`), and only ship the goods on `invoice.paid`.
+- The admin console shows the status code and response of every delivery and lets you retry one by hand.
 
-### 4. 其他接口
+### 4. Other endpoints
 
-`GET /api/v1/invoices/{id}`、`GET /api/v1/invoices?status=&order_id=&page=&page_size=`、`POST /api/v1/invoices/{id}/cancel`（仅 `pending` 可取消）。完整契约见 [`docs/api.md`](docs/api.md)。
+`GET /api/v1/invoices/{id}`, `GET /api/v1/invoices?status=&order_id=&page=&page_size=`, `POST /api/v1/invoices/{id}/cancel` (only `pending` invoices can be cancelled). The full contract is in [`docs/api.md`](docs/api.md).
 
-## 配置参考（环境变量）
+## Configuration reference (environment variables)
 
-| 变量 | 默认值 | 说明 |
+| Variable | Default | Description |
 |---|---|---|
-| `DATABASE_URL` | — （必填） | PostgreSQL URL；可用 `pool_max_conns` 等参数覆盖连接池大小 |
-| `APP_SECRET` | — （必填，≥32 字符） | 静态加密（RPC 地址、webhook 密钥）的主密钥，**必须保持不变并妥善备份** |
-| `APP_ENV` | `development` | `production` 启用 Secure cookie、HSTS，禁止 webhook 访问内网，拒绝 `seed-dev` |
-| `HTTP_ADDR` | `:8080` | 监听地址 |
-| `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`（JSON 日志，不记录请求头、请求体、查询串） |
-| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | — | 首次启动且没有任何管理员时创建 owner |
-| `SCANNER_ENABLED` | `true` | 本进程是否运行链扫描与账单过期任务 |
-| `WEBHOOK_ALLOW_PRIVATE` | 开发环境 `true`，生产 `false` | 是否允许 webhook 指向 127.0.0.1 / 内网地址 |
-| `TRUST_PROXY_HEADERS` / `TRUSTED_PROXIES` | 关 / — | 仅当直接对端是受信代理时才采信 `X-Forwarded-For`（限流、审计 IP） |
-| `CORS_ORIGINS` | — | 允许直接在浏览器调用 `/api/v1` 的来源（通常留空） |
-| `COINGECKO_API_KEY` / `COINGECKO_PRO` / `COINGECKO_BASE_URL` | — | 汇率来源 CoinGecko |
-| `RPC_<CHAIN_ID>` | 内置公共节点 | 每条链的 RPC，逗号分隔做故障切换，例如 `RPC_TRON_NILE`；后台配置优先 |
-| `SMTP_HOST` / `SMTP_FROM` | compose 中为 `mailpit` / `CryptoPay <no-reply@cryptopay.local>` | 发信服务器与发件人；两者都设置才启用邮件（`SMTP_HOST` 为空即关闭邮件；设置了 `SMTP_HOST` 却没有 `SMTP_FROM` 会启动失败） |
-| `SMTP_PORT` | `587` | SMTP 端口（隐式 TLS 通常是 465，Mailpit 是 1025） |
-| `SMTP_USERNAME` / `SMTP_PASSWORD` | — | SMTP 认证（AUTH PLAIN，只在 TLS 连接上发送）；密码不会写入日志 |
-| `SMTP_TLS` | `starttls` | `starttls`（必须升级为 TLS，服务器不支持时拒绝发送而不是明文发送）、`tls`（隐式 TLS）、`none`（明文，仅限本机 / 内网中继如 Mailpit） |
-| `WEB_PORT` / `BACKEND_PORT` / `MAILPIT_PORT` / `POSTGRES_PASSWORD` | `3000` / `8080` / `8025` / 开发密码 | 仅 docker compose 使用 |
+| `DATABASE_URL` | — (required) | PostgreSQL URL; parameters such as `pool_max_conns` override the pool size |
+| `APP_SECRET` | — (required, ≥ 32 characters) | Master key for encryption at rest (RPC URLs, webhook secrets). **Keep it unchanged and back it up safely** |
+| `APP_ENV` | `development` | `production` enables Secure cookies and HSTS, forbids webhooks to private networks and makes `seed-dev` refuse to run |
+| `HTTP_ADDR` | `:8080` | Listen address |
+| `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` (JSON logs; request headers, bodies and query strings are never logged) |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | — | Create the owner on first start when there is no admin yet |
+| `SCANNER_ENABLED` | `true` | Whether this process runs the chain scanner and the invoice-expiry job |
+| `WEBHOOK_ALLOW_PRIVATE` | `true` in development, `false` in production | Whether webhooks may target 127.0.0.1 / private-network addresses |
+| `TRUST_PROXY_HEADERS` / `TRUSTED_PROXIES` | off / — | Honor `X-Forwarded-For` (rate limiting, audit IP) only when the direct peer is a trusted proxy |
+| `CORS_ORIGINS` | — | Origins allowed to call `/api/v1` directly from a browser (usually leave empty) |
+| `COINGECKO_API_KEY` / `COINGECKO_PRO` / `COINGECKO_BASE_URL` | — | CoinGecko, the exchange-rate source |
+| `RPC_<CHAIN_ID>` | built-in public node | RPC per chain; separate several with commas for failover, for example `RPC_TRON_NILE`. A value set in the console takes precedence |
+| `SMTP_HOST` / `SMTP_FROM` | `mailpit` / `CryptoPay <no-reply@cryptopay.local>` in compose | Mail server and sender. Email is enabled only when both are set (an empty `SMTP_HOST` turns email off; setting `SMTP_HOST` without `SMTP_FROM` makes startup fail) |
+| `SMTP_PORT` | `587` | SMTP port (implicit TLS is usually 465, Mailpit uses 1025) |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` | — | SMTP authentication (AUTH PLAIN, sent only over a TLS connection); the password is never logged |
+| `SMTP_TLS` | `starttls` | `starttls` (must upgrade to TLS; if the server cannot, sending is refused instead of falling back to plaintext), `tls` (implicit TLS), `none` (plaintext, only for a local or internal relay such as Mailpit) |
+| `WEB_PORT` / `BACKEND_PORT` / `MAILPIT_PORT` / `POSTGRES_PASSWORD` | `3000` / `8080` / `8025` / a development password | Used by docker compose only |
 
-运行时可调参数（有效期、宽限期、容差、加价、webhook 次数与超时、`checkout_base_url`、是否要求两步验证、邮件通知开关、告警收件人、邮件语言）在后台“设置”中修改。各项说明见 [`.env.example`](.env.example)。
+Runtime parameters (lifetime, grace period, tolerance, markup, webhook attempts and timeout, `checkout_base_url`, whether two-step verification is required, the email notification switches, alert recipients, email language) are changed under "Settings" in the admin console. Each variable is documented in [`.env.example`](.env.example).
 
-`gateway` 命令：`serve`（默认，启动时自动迁移，`--no-migrate` 关闭）、`migrate`、`create-admin --email --password --role`、`reset-2fa --email`（紧急重置某个管理员的两步验证）、`seed-dev`、`healthcheck`、`version`。
+`gateway` commands: `serve` (the default; migrates on start, `--no-migrate` turns that off), `migrate`, `create-admin --email --password --role`, `reset-2fa --email` (emergency reset of an admin's two-step verification), `seed-dev`, `healthcheck`, `version`.
 
-## 在 Docker 中运行测试
+## Running the tests in Docker
 
-所有测试都可以在容器中运行，本机不需要 Go 或 Node：
+Every test runs in a container, so neither Go nor Node is needed on the host:
 
 ```bash
-make test           # 后端 + 前端
-make test-backend   # go vet + go test -race ./...（使用一次性的 PostgreSQL 容器）
+make test           # backend + frontend
+make test-backend   # go vet + go test -race ./... (uses a throwaway PostgreSQL container)
 make test-web       # pnpm lint && pnpm typecheck && pnpm test
-make test-live      # 可选：用免费公共 RPC 测试链适配器（依赖网络、受限流影响，可能偶发失败）
+make test-live      # optional: exercise the chain adapters against free public RPCs (needs the network, subject to rate limits, may fail now and then)
 make lint           # gofmt / go vet / eslint / tsc
 ```
 
-等价的 compose 命令：`docker compose -f docker-compose.test.yml run --rm --build backend-test`（退出码即测试结果），之后 `docker compose -f docker-compose.test.yml down -v`。
+The equivalent compose command is `docker compose -f docker-compose.test.yml run --rm --build backend-test` (its exit code is the test result), followed by `docker compose -f docker-compose.test.yml down -v`.
 
-本机直接运行后端测试：`export TEST_DATABASE_URL='postgres://postgres:postgres@localhost:54329/cryptopay_test?sslmode=disable' && cd backend && go test -race ./...`（未设置时数据库相关测试会被跳过）。
+To run the backend tests directly on the host: `export TEST_DATABASE_URL='postgres://postgres:postgres@localhost:54329/cryptopay_test?sslmode=disable' && cd backend && go test -race ./...` (the database tests are skipped when it is not set).
 
-## 安全说明
+## Security notes
 
-- **非托管 / 只读**：网关只保存扩展**公钥**或固定地址，只调用只读 RPC，不签名、不广播交易。资金归集（sweep）由商户自己持有助记词的钱包软件完成，不在本系统范围内。
-- **永远不要粘贴私钥或助记词**。`xprv` 等私钥会被拒绝；任何要求你在后台输入助记词的指引都是错误的。
-- `APP_SECRET` 加密数据库中的 RPC 地址（常含 API key）和 webhook 签名密钥；API key 与会话令牌只保存 SHA-256 哈希。丢失 `APP_SECRET` 会导致这些密文无法解密，泄露则需要轮换所有 RPC key 与 webhook 密钥。
-- 管理后台：HttpOnly + SameSite=Lax 会话 cookie（生产环境 Secure）、所有写操作要求 `X-Requested-With: cryptopay`（CSRF 防护）、登录失败按 IP+邮箱限流、可选（或强制）TOTP 两步验证与一次性恢复码、会话管理、安全事件邮件通知、owner / admin / viewer 三级权限，所有修改写入审计日志（不含密钥、密码、验证码和完整 RPC 地址）。
-- 账单 UUID 即收银台的访问凭证：不要在公开场合泄露 `checkout_url`。
+- **Non-custodial and read-only**: the gateway stores only extended **public** keys or static addresses, calls read-only RPC methods only, and never signs or broadcasts a transaction. Sweeping funds is done by the merchant in wallet software that holds the mnemonic, and is outside the scope of this system.
+- **Never paste a private key or mnemonic.** Private keys such as `xprv` are rejected, and any instruction that asks you to type a mnemonic into the console is wrong.
+- `APP_SECRET` encrypts the RPC URLs (which often contain API keys) and the webhook signing secrets in the database; API keys and session tokens are stored only as SHA-256 hashes. If `APP_SECRET` is lost, that ciphertext can no longer be decrypted; if it leaks, every RPC key and webhook secret must be rotated.
+- Admin console: HttpOnly + SameSite=Lax session cookie (Secure in production), `X-Requested-With: cryptopay` required on every write (CSRF protection), sign-in rate limiting per IP + email, optional (or enforced) TOTP two-step verification with one-time recovery codes, session management, security-event emails, three roles (owner / admin / viewer), and an audit log of every change (without secrets, passwords, verification codes or full RPC URLs).
+- The invoice UUID is the access credential of the checkout: do not leak a `checkout_url` in public.
 
-### 生产环境检查清单
+### Production checklist
 
-- [ ] `APP_ENV=production`，全程 HTTPS（反向代理终止 TLS），设置正确的 `checkout_base_url`
-- [ ] 强随机 `APP_SECRET` 并离线备份；强 `ADMIN_PASSWORD`，首次登录后修改；`POSTGRES_PASSWORD` 已修改
-- [ ] 所有管理员启用两步验证并离线保存恢复码，然后在“设置 → 安全”中打开“要求两步验证”；至少保留两个 owner，并记下 `gateway reset-2fa` 紧急恢复步骤
-- [ ] 配置真实的 SMTP 服务（`SMTP_TLS=starttls` 或 `tls`，不要在公网上用 `none`；生产环境去掉或不要暴露 Mailpit），发送测试邮件确认能收到；发件域名配置 SPF / DKIM，避免通知进入垃圾箱
-- [ ] 打开运营告警并设置告警收件人（或确认所有 owner 的邮箱有人查看）
-- [ ] 每条启用的链都配置了商用 RPC（不要依赖免费公共节点），并用“测试 RPC”验证
-- [ ] 钱包预览地址已与自己的钱包软件核对；测试用的 Hardhat 钱包**没有**分配给主网（既不是默认钱包，也不是商户专属钱包）
-- [ ] 反向代理会覆盖/追加 `X-Forwarded-For`，并把代理地址配置到 `TRUSTED_PROXIES`（否则所有顾客共用一个限流桶）
-- [ ] 后端端口不对公网开放，只暴露 Web；数据库定期备份
-- [ ] 商户端 webhook 校验签名、检查时间戳并按事件 id 去重
-- [ ] 多实例部署时，只让一个或少数实例 `SCANNER_ENABLED=true`（扫描有分布式锁，可多实例，但无需全部开启）
+- [ ] `APP_ENV=production`, HTTPS everywhere (TLS terminated at a reverse proxy), and a correct `checkout_base_url`
+- [ ] A strong random `APP_SECRET`, backed up offline; a strong `ADMIN_PASSWORD`, changed after the first sign-in; `POSTGRES_PASSWORD` changed
+- [ ] Every admin has two-step verification enabled and their recovery codes stored offline, then "Require two-step verification" is turned on under "Settings → Security"; keep at least two owners and note the `gateway reset-2fa` break-glass procedure
+- [ ] A real SMTP service is configured (`SMTP_TLS=starttls` or `tls`; never `none` over the public internet; remove Mailpit or do not expose it in production), and a test email arrives; SPF / DKIM are set up on the sending domain so notifications do not land in spam
+- [ ] Operational alerts are on and alert recipients are set (or someone actually reads every owner's mailbox)
+- [ ] Every enabled chain has a commercial RPC (do not rely on the free public nodes), checked with "Test"
+- [ ] The wallet preview addresses were compared with your own wallet software; the test-only Hardhat wallets are **not** assigned to any mainnet (neither as a default wallet nor as a merchant's own wallet)
+- [ ] The reverse proxy overwrites/appends `X-Forwarded-For`, and the proxy's address is set in `TRUSTED_PROXIES` (otherwise every customer shares one rate-limit bucket)
+- [ ] The backend port is not open to the internet, only the web port is exposed; the database is backed up regularly
+- [ ] Merchant webhook handlers verify the signature, check the timestamp and deduplicate on the event id
+- [ ] With several instances, enable `SCANNER_ENABLED=true` on only one or a few of them (scanning is protected by a distributed lock, so several may run, but not all of them need to)
 
-## 已知限制
+## Known limitations
 
-- **EVM / Tron 原生币的内部转账不会被发现**：只识别交易顶层的 ETH/BNB/TRX 转账和 ERC-20/TRC-20 `Transfer` 事件；通过合约内部调用（部分智能合约钱包、交易所批量提现）转入的原生币检测不到，需要在后台把账单手动标记为已付。
-- **Litecoin MWEB** 隐私交易无法观察；请使用普通地址付款。
-- **Solana 上的 PYUSD 是 Token-2022 代币**：发行方 Paxos 可以开启转账手续费（目前为 0）。一旦开启，到账金额会少于顾客发出的金额，可能被判为部分支付；发行方还有永久委托权限，可以从任意账户划走 PYUSD。检测按实际到账金额计算。
-- 没有可免费使用且无需 key 的 Litecoin JSON-RPC：内置默认节点每分钟仅允许少量匿名请求，只够开发用，生产必须配置自己的 RPC。
-- **资金归集不在范围内**：每张账单的派生地址上的资金需用自己的钱包软件归集（同一钱包助记词）。
-- **固定地址钱包**靠唯一金额区分账单：金额不精确（交易所扣手续费、顾客手动改金额）的付款会进入“未匹配转账”，需要管理员手动分配；同一金额在账单关闭（宽限期结束）后会被复用。
-- 扫描器不回溯历史：链第一次被扫描时从当前区块高度开始。
-- 把一条链上最后一个钱包移除后，只要还有等待付款的报价，这条链会继续被扫描，直到这些报价支付或关闭；但**禁用**一条链会立即停止扫描，禁用前请确认没有未付订单。
-- 汇率来自 CoinGecko（无 key 时有较低的速率限制）；拿不到汇率时无法用该资产报价（稳定币在开启锚定时按 1 USD 计）。
-- 限流计数保存在进程内存中，多实例部署时各实例分别计数。
-- webhook 至少投递一次且不保证顺序（见上文）。
+- **Internal native-coin transfers on EVM / Tron are not detected.** Only top-level ETH/BNB/TRX transfers and ERC-20/TRC-20 `Transfer` events are recognized. Native coins that arrive through an internal contract call (some smart-contract wallets, exchange batch withdrawals) are not seen, and the invoice has to be marked as paid by hand in the console.
+- **Litecoin MWEB** privacy transactions cannot be observed; pay to a regular address.
+- **PYUSD on Solana is a Token-2022 token.** Its issuer, Paxos, can switch on a transfer fee (currently 0). Once it does, the amount that arrives is smaller than what the customer sent and may be judged a partial payment; the issuer also holds a permanent delegate that can move PYUSD out of any account. Detection uses the amount that actually arrived.
+- There is no free Litecoin JSON-RPC that needs no key: the built-in default node allows only a few anonymous requests per minute, which is enough for development only. Production must configure its own RPC.
+- **Sweeping funds is out of scope.** Funds on each invoice's derived address have to be collected with your own wallet software (the same wallet mnemonic).
+- **Static-address wallets** tell invoices apart by a unique amount: a payment whose amount is not exact (an exchange deducting its fee, a customer editing the amount) ends up under "Unmatched transfers" and an admin has to assign it by hand. The same amount is reused once the invoice is closed (after the grace period).
+- The scanner does not look back in history: the first time a chain is scanned it starts at the current block height.
+- After the last wallet of a chain is removed, the chain keeps being scanned while any quote is still waiting for payment, until those quotes are paid or closed. **Disabling** a chain, however, stops scanning immediately, so make sure there are no unpaid orders before disabling it.
+- Exchange rates come from CoinGecko (with a lower rate limit without a key). When no rate is available that asset cannot be quoted (stablecoins are quoted at 1 USD while pegging is on).
+- Rate-limit counters live in process memory, so with several instances each instance counts separately.
+- Webhooks are delivered at least once and in no guaranteed order (see above).
