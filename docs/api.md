@@ -435,7 +435,7 @@ an admin who has two-factor authentication enabled (409 otherwise), and
 with `DELETE /users/{id}/2fa` (the user is signed out everywhere and
 e-mailed). If no owner can sign in any more, the server command
 `gateway reset-2fa --email <address>` does the same (break glass, see
-README).
+[admin-security.md](admin-security.md)).
 
 ### Sessions
 
@@ -448,7 +448,8 @@ also signs out the other sessions.
 
 ### E-mail
 
-E-mail is configured with the `SMTP_*` environment variables (README); it
+E-mail is configured with the `SMTP_*` environment variables
+([configuration.md](configuration.md)); it
 is *configured* when `SMTP_HOST` and `SMTP_FROM` are set. Without it nothing
 is queued and `GET /email/status` reports `configured: false`.
 
