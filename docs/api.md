@@ -177,7 +177,7 @@ Auth: `POST /auth/login` (and, for accounts with two-factor authentication,
 `POST /auth/login/2fa`) sets an HttpOnly `cp_session` cookie (SameSite=Lax, 7 days).
 All mutating requests must send header `X-Requested-With: cryptopay` (CSRF guard).
 Roles: `owner` > `admin` > `viewer`. Viewers get 403 on every non-GET (except logout, own
-password and own two-factor authentication).
+password, own two-factor authentication and own sessions).
 User management is owner-only. Every mutation writes an audit log entry.
 
 ```ts
@@ -185,6 +185,8 @@ interface AdminUser { id: string; email: string; role: "owner"|"admin"|"viewer";
 
 // The first step of a sign-in for an account with two-factor authentication.
 interface LoginChallenge { two_factor_required: true; challenge_token: string; expires_at: string; }
+
+interface AdminSession { id: string; ip: string; user_agent: string; created_at: string; expires_at: string; current: boolean; }
 
 // One row of the e-mail outbox (bodies only in GET /email/outbox/{id}).
 interface EmailMessage {
@@ -266,6 +268,9 @@ interface Overview {
 | `POST /auth/2fa/enable` | `{ code }` | `{ recovery_codes: string[] }` (10 codes, shown once; signs out every other session of the user; 409 without a pending secret or when already enabled) |
 | `POST /auth/2fa/disable` | `{ current_password, code }` (`code`: a current code or a recovery code) | `204` (409 while `require_2fa` is on, or when not enabled) |
 | `POST /auth/2fa/recovery-codes` | `{ current_password, code }` (`code`: a current code from the authenticator app) | `{ recovery_codes: string[] }` (a new set of 10; the old set stops working; 409 when not enabled) |
+| `GET /auth/sessions` | | `{ items: AdminSession[] }` (own unexpired sessions, newest first) |
+| `DELETE /auth/sessions/{id}` | | `204` (own sessions only, 404 otherwise; deleting the current session signs out and clears the cookie) |
+| `POST /auth/sessions/revoke-others` | | `{ revoked: number }` |
 | `GET /overview` | `days?` (1..365, default 30) | `Overview` |
 | `GET /invoices` | `status?`, `merchant_id?`, `q?` (invoice id, order id, address or tx hash), `from?`, `to?` (RFC 3339), paging | `Page<AdminInvoice>` |
 | `POST /invoices` | `CreateInvoice & { merchant_id: string }` | `201 AdminInvoice` |
@@ -387,6 +392,15 @@ with `DELETE /users/{id}/2fa` (the user is signed out everywhere and
 e-mailed). If no owner can sign in any more, the server command
 `gateway reset-2fa --email <address>` does the same (break glass, see
 README).
+
+### Sessions
+
+`GET /auth/sessions` lists the caller's own sessions (IP and user agent as
+seen at sign-in, `current` marks the one making the request).
+`DELETE /auth/sessions/{id}` signs one of them out (another user's session
+id answers 404); `POST /auth/sessions/revoke-others` signs out all but the
+current one. Changing the password or enabling two-factor authentication
+also signs out the other sessions.
 
 ### E-mail
 

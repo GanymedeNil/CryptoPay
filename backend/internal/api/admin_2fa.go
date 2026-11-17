@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -373,4 +374,83 @@ func (a *API) adminResetTwoFactor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	noContent(w)
+}
+
+// ---- sessions ----
+
+type sessionJSON struct {
+	ID        string    `json:"id"`
+	IP        string    `json:"ip"`
+	UserAgent string    `json:"user_agent"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Current   bool      `json:"current"`
+}
+
+func (a *API) listSessions(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	ad, _ := adminFrom(ctx)
+	list, err := a.store.ListUserSessions(ctx, ad.User.ID, a.now())
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, itemsJSON[sessionJSON]{Items: mapSlice(list, func(s domain.AdminSession) sessionJSON {
+		return sessionJSON{ID: s.ID.String(), IP: s.IP, UserAgent: s.UserAgent, CreatedAt: s.CreatedAt.UTC(),
+			ExpiresAt: s.ExpiresAt.UTC(), Current: s.ID == ad.Session.ID}
+	})})
+}
+
+// deleteSession signs out one of the caller's own sessions (the current
+// one included: then the cookie is cleared as on logout).
+func (a *API) deleteSession(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id, err := pathUUID(r, "id")
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	ad, _ := adminFrom(ctx)
+	current := id == ad.Session.ID
+	err = a.inTx(ctx, func(tx *store.Store) error {
+		if err := tx.DeleteUserSession(ctx, ad.User.ID, id); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return errNotFound("session not found")
+			}
+			return err
+		}
+		return a.audit(ctx, tx, nil, auditEntry{Action: "auth.session_revoke", TargetType: "admin_user", TargetID: ad.User.ID.String(),
+			Detail: map[string]any{"session_id": id.String(), "current": current}})
+	})
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	if current {
+		a.clearSessionCookie(w)
+	}
+	noContent(w)
+}
+
+func (a *API) revokeOtherSessions(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if err := decodeJSON(r, &struct{}{}); err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	ad, _ := adminFrom(ctx)
+	var n int64
+	err := a.inTx(ctx, func(tx *store.Store) error {
+		var err error
+		if n, err = tx.DeleteUserSessions(ctx, ad.User.ID, ad.Session.ID); err != nil {
+			return err
+		}
+		return a.audit(ctx, tx, nil, auditEntry{Action: "auth.sessions_revoke_others", TargetType: "admin_user",
+			TargetID: ad.User.ID.String(), Detail: map[string]any{"revoked": n}})
+	})
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"revoked": n})
 }

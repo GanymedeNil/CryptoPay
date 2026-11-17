@@ -1,8 +1,8 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api/client";
-import { adminUser, renderAdmin } from "@/test/admin";
+import { adminUser, renderAdmin, sessionFixture } from "@/test/admin";
 import { SecurityPage } from "./security-page";
 
 const nav = vi.hoisted(() => ({ replace: vi.fn() }));
@@ -14,6 +14,9 @@ vi.mock("next/navigation", () => ({
 }));
 
 const api = vi.hoisted(() => ({
+  listSessions: vi.fn(),
+  revokeSession: vi.fn(),
+  revokeOtherSessions: vi.fn(),
   disableTwoFactor: vi.fn(),
   regenerateRecoveryCodes: vi.fn(),
   setupTwoFactor: vi.fn(),
@@ -21,6 +24,74 @@ const api = vi.hoisted(() => ({
   listAuditLogs: vi.fn(),
 }));
 vi.mock("@/lib/api/admin", () => ({ adminApi: api }));
+
+const SESSIONS = [
+  sessionFixture(),
+  sessionFixture({
+    id: "s-2",
+    ip: "198.51.100.7",
+    user_agent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1",
+    current: false,
+  }),
+  sessionFixture({ id: "s-3", ip: "203.0.113.50", user_agent: "", current: false }),
+];
+
+beforeEach(() => {
+  api.listSessions.mockResolvedValue({ items: SESSIONS });
+});
+
+const sessionsCard = () => screen.getByRole("region", { name: "Sign-in sessions" });
+
+describe("SecurityPage · sessions", () => {
+  it("lists the caller's sessions with the current device marked", async () => {
+    renderAdmin(<SecurityPage />);
+    const card = sessionsCard();
+    expect(await within(card).findByText("Chrome · macOS")).toBeInTheDocument();
+    expect(within(card).getByText("Safari · iOS")).toBeInTheDocument();
+    expect(within(card).getByText("Unknown device")).toBeInTheDocument();
+    const current = within(card).getByText("This device").closest("tr")!;
+    expect(within(current).getByText("203.0.113.24")).toBeInTheDocument();
+  });
+
+  it("signs out another session after confirmation", async () => {
+    api.revokeSession.mockResolvedValue(undefined);
+    renderAdmin(<SecurityPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Sign out: 198.51.100.7" }));
+    const confirm = await screen.findByRole("alertdialog", { name: "Sign out this session?" });
+    await userEvent.click(within(confirm).getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(api.revokeSession).toHaveBeenCalledWith("s-2"));
+    expect(nav.replace).not.toHaveBeenCalled();
+    await waitFor(() => expect(api.listSessions).toHaveBeenCalledTimes(2));
+  });
+
+  it("signing out this device is a sign-out", async () => {
+    api.revokeSession.mockResolvedValue(undefined);
+    renderAdmin(<SecurityPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Sign out: 203.0.113.24" }));
+    const confirm = await screen.findByRole("alertdialog", { name: "Sign out this device?" });
+    await userEvent.click(within(confirm).getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(api.revokeSession).toHaveBeenCalledWith("s-1"));
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith("/admin/login?reason=signedOut"));
+  });
+
+  it("signs out every other device", async () => {
+    api.revokeOtherSessions.mockResolvedValue({ revoked: 2 });
+    renderAdmin(<SecurityPage />);
+    await within(sessionsCard()).findByText("Chrome · macOS");
+    await userEvent.click(within(sessionsCard()).getByRole("button", { name: "Sign out all other devices" }));
+    const confirm = await screen.findByRole("alertdialog", { name: "Sign out all other devices?" });
+    await userEvent.click(within(confirm).getByRole("button", { name: "Sign out all other devices" }));
+    await waitFor(() => expect(api.revokeOtherSessions).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(api.listSessions).toHaveBeenCalledTimes(2));
+  });
+
+  it("has nothing to sign out when this is the only session", async () => {
+    api.listSessions.mockResolvedValue({ items: [sessionFixture()] });
+    renderAdmin(<SecurityPage />);
+    await within(sessionsCard()).findByText("Chrome · macOS");
+    expect(within(sessionsCard()).getByRole("button", { name: "Sign out all other devices" })).toBeDisabled();
+  });
+});
 
 describe("SecurityPage · two-step verification", () => {
   it("offers setup when it is off", async () => {

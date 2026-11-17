@@ -5,7 +5,7 @@ export const ROLE_RANK: Record<AdminRole, number> = { viewer: 0, admin: 1, owner
 
 export const ROLES: readonly AdminRole[] = ["owner", "admin", "viewer"];
 
-/** Viewers get 403 on every non-GET except logout, own password and own 2FA. */
+/** Viewers get 403 on every non-GET except logout, own password, own 2FA and own sessions. */
 export function canWrite(role: AdminRole | undefined): boolean {
   return role === "admin" || role === "owner";
 }

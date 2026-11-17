@@ -343,9 +343,9 @@ func TestReset2FA(t *testing.T) {
 	n, err := st.CountRecoveryCodes(ctx, u.ID)
 	require.NoError(t, err)
 	assert.Zero(t, n)
-	var sessions int
-	require.NoError(t, st.Pool().QueryRow(ctx, `SELECT count(*) FROM admin_sessions WHERE user_id = $1`, u.ID).Scan(&sessions))
-	assert.Zero(t, sessions)
+	sessions, err := st.ListUserSessions(ctx, u.ID, time.Now())
+	require.NoError(t, err)
+	assert.Empty(t, sessions)
 	logs, err := st.ListAuditLogs(ctx, store.AuditFilter{Action: "user.2fa_reset"})
 	require.NoError(t, err)
 	require.Equal(t, 1, logs.Total)

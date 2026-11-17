@@ -157,7 +157,7 @@ describe("admin mock", () => {
   });
 });
 
-describe("admin mock: two-factor authentication, e-mail", () => {
+describe("admin mock: two-factor authentication, sessions, e-mail", () => {
   const get = (path, cookie) => fetch(`${BASE}/api/admin${path}`, { headers: { cookie } });
   const send = (method, path, cookie, body) =>
     fetch(`${BASE}/api/admin${path}`, { method, headers: { ...json, cookie }, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -238,6 +238,7 @@ describe("admin mock: two-factor authentication, e-mail", () => {
     const blocked = await get("/invoices", user.cookie);
     expect(blocked.status).toBe(403);
     expect((await blocked.json()).error.code).toBe("two_factor_setup_required");
+    expect((await get("/auth/sessions", user.cookie)).status).toBe(403);
 
     const wrongPw = await send("POST", "/auth/2fa/setup", user.cookie, { current_password: "nope" });
     expect(wrongPw.status).toBe(400);
@@ -261,6 +262,28 @@ describe("admin mock: two-factor authentication, e-mail", () => {
     expect((await send("DELETE", `/users/${created.id}/2fa`, owner.cookie)).status).toBe(204);
     expect((await get("/auth/me", user.cookie)).status).toBe(401);
     expect((await send("DELETE", `/users/${created.id}/2fa`, owner.cookie)).status).toBe(409);
+  });
+
+  it("lists and revokes the caller's own sessions", async () => {
+    const a = await login("admin@cryptopay.test", "admin-pass-123");
+    const b = await login("admin@cryptopay.test", "admin-pass-123");
+    const list = await (await get("/auth/sessions", a.cookie)).json();
+    expect(list.items.filter((s) => s.current)).toHaveLength(1);
+    expect(list.items.length).toBeGreaterThanOrEqual(2);
+    expect(Object.keys(list.items[0]).sort()).toEqual(["created_at", "current", "expires_at", "id", "ip", "user_agent"]);
+    const viewer = await login("viewer@cryptopay.test", "viewer-pass-123");
+    const other = (await (await get("/auth/sessions", viewer.cookie)).json()).items[0];
+    expect((await send("DELETE", `/auth/sessions/${other.id}`, a.cookie)).status).toBe(404);
+
+    const revoked = await (await send("POST", "/auth/sessions/revoke-others", a.cookie)).json();
+    expect(revoked.revoked).toBeGreaterThanOrEqual(1);
+    expect((await get("/auth/me", b.cookie)).status).toBe(401);
+    const mine = (await (await get("/auth/sessions", a.cookie)).json()).items;
+    expect(mine).toHaveLength(1);
+    const del = await send("DELETE", `/auth/sessions/${mine[0].id}`, a.cookie);
+    expect(del.status).toBe(204);
+    expect(del.headers.get("set-cookie")).toMatch(/Max-Age=0/);
+    expect((await get("/auth/me", a.cookie)).status).toBe(401);
   });
 
   it("reports the e-mail status, sends test mails and keeps an outbox", async () => {

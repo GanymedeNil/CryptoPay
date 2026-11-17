@@ -9,6 +9,7 @@ import { applyFieldErrors, describeError, errorKind } from "./errors";
 import { addressLink, fillExplorerTemplate, safeHttpUrl, txLink } from "./explorer";
 import { formToSettings, recipientProblem, settingsSchema, settingsToForm } from "./settings-form";
 import {
+  describeUserAgent,
   EMAIL_KINDS,
   emailKindLabel,
   groupSecret,
@@ -325,6 +326,16 @@ describe("two-factor helpers", () => {
     expect(emailKindLabel(t, "alert.scanner_failing")).toBe("Scanner failing");
     expect(emailKindLabel(t, "security.unknown_future_kind")).toBe("security.unknown_future_kind");
     for (const k of EMAIL_KINDS) expect(emailKindLabel(t, k.kind)).not.toContain("admin.");
+  });
+
+  it("describes session user agents", () => {
+    expect(describeUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36")).toEqual({ browser: "Chrome", os: "macOS" });
+    expect(describeUserAgent("Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1")).toEqual({ browser: "Safari", os: "iOS" });
+    expect(describeUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36 Edg/131.0")).toEqual({ browser: "Edge", os: "Windows" });
+    expect(describeUserAgent("Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0")).toEqual({ browser: "Firefox", os: "Linux" });
+    expect(describeUserAgent("curl/8.7.1")).toEqual({ browser: "curl", os: null });
+    expect(describeUserAgent("")).toBeNull();
+    expect(describeUserAgent("Go-http-client/1.1")).toBeNull();
   });
 });
 

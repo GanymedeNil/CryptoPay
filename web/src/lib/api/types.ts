@@ -294,6 +294,15 @@ export interface LoginChallenge {
   expires_at: string;
 }
 
+export interface AdminSession {
+  id: string;
+  ip: string;
+  user_agent: string;
+  created_at: string;
+  expires_at: string;
+  current: boolean;
+}
+
 export type EmailMessageStatus = "pending" | "sent" | "failed";
 
 /** E-mail kinds of docs/api.md ("E-mail"). */
@@ -555,6 +564,10 @@ export interface RegenerateRecoveryCodesRequest {
 /** 10 single-use codes, shown only in this response. */
 export interface RecoveryCodesResponse {
   recovery_codes: string[];
+}
+
+export interface RevokeOtherSessionsResponse {
+  revoked: number;
 }
 
 export interface EmailStatus {

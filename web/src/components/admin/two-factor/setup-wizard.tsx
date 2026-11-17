@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { QrCode } from "@/components/checkout/qr-code";
 import { describeError } from "@/lib/admin/errors";
-import { useAdminMutation } from "@/lib/admin/queries";
+import { adminKeys, useAdminMutation } from "@/lib/admin/queries";
 import { groupSecret, OTP_LENGTH } from "@/lib/admin/two-factor";
 import { adminApi } from "@/lib/api/admin";
 import { isApiError } from "@/lib/api/client";
@@ -183,6 +183,8 @@ function ScanStep({
   const [formError, setFormError] = useState<string | null>(null);
   const enable = useAdminMutation({
     mutationFn: (c: string) => adminApi.enableTwoFactor({ code: c }),
+    // Enabling signs out the user's other sessions.
+    invalidate: [adminKeys.sessions],
     successMessage: t("admin.twoFactor.setup.enabledToast"),
     toastError: false,
     onSuccess: (r) => onDone(r.recovery_codes),

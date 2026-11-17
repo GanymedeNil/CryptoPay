@@ -13,6 +13,7 @@ import type {
   AdminInvoice,
   AdminInvoiceQuery,
   AdminMe,
+  AdminSession,
   AdminUser,
   Asset,
   AssignTransferRequest,
@@ -46,6 +47,7 @@ import type {
   MerchantWallet,
   RecoveryCodesResponse,
   RegenerateRecoveryCodesRequest,
+  RevokeOtherSessionsResponse,
   RotateWebhookSecretResponse,
   SetMerchantWalletRequest,
   Settings,
@@ -106,6 +108,14 @@ export function createAdminApi(client: ApiClient = apiClient) {
     /** `POST /auth/2fa/recovery-codes` → a new set of recovery codes. */
     regenerateRecoveryCodes: (body: RegenerateRecoveryCodesRequest) =>
       client.post<RecoveryCodesResponse>(`${A}/auth/2fa/recovery-codes`, body),
+
+    // ---- own sessions ----------------------------------------------------
+    /** `GET /auth/sessions` (own unexpired sessions, newest first). */
+    listSessions: (o?: Opts) => client.get<ItemsResponse<AdminSession>>(`${A}/auth/sessions`, undefined, o),
+    /** `DELETE /auth/sessions/{id}` → 204 (the current one = sign out). */
+    revokeSession: (id: string) => client.delete<void>(`${A}/auth/sessions/${seg(id)}`),
+    /** `POST /auth/sessions/revoke-others` */
+    revokeOtherSessions: () => client.post<RevokeOtherSessionsResponse>(`${A}/auth/sessions/revoke-others`),
 
     // ---- overview --------------------------------------------------------
     /** `GET /overview?days=` (1..365, default 30). */

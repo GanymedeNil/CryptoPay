@@ -151,7 +151,7 @@ func TestTwoFactorLoginFlow(t *testing.T) {
 		assert.NotContains(t, mails, s)
 	}
 	// Nor in later API responses.
-	for _, path := range []string{"/auth/me", "/audit-logs?page_size=100"} {
+	for _, path := range []string{"/auth/me", "/auth/sessions", "/audit-logs?page_size=100"} {
 		body := string(a.get(path).status(http.StatusOK).Body)
 		assert.NotContains(t, body, secret, path)
 		assert.NotContains(t, body, enc, path)
@@ -421,6 +421,7 @@ func TestTwoFactorEnforcement(t *testing.T) {
 	assert.Equal(t, true, me["two_factor_setup_required"])
 	blocked := []struct{ method, path string }{
 		{http.MethodGet, "/overview"}, {http.MethodGet, "/invoices"}, {http.MethodGet, "/settings"},
+		{http.MethodGet, "/auth/sessions"}, {http.MethodPost, "/auth/sessions/revoke-others"},
 		{http.MethodPost, "/auth/2fa/disable"}, {http.MethodPost, "/auth/2fa/recovery-codes"},
 		{http.MethodGet, "/email/status"}, {http.MethodGet, "/chains"}, {http.MethodPost, "/merchants"},
 	}
@@ -522,4 +523,68 @@ func TestDeactivationClearsChallenges(t *testing.T) {
 	owner.del("/users/" + u.User.ID.String()).status(http.StatusNoContent)
 	require.NoError(t, h.Store.Pool().QueryRow(h.Ctx, `SELECT count(*) FROM admin_login_challenges`).Scan(&n))
 	assert.Zero(t, n)
+}
+
+func TestSessionManagement(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	a := h.newAdmin(domain.RoleViewer)
+	h.Clock.Advance(time.Minute)
+	s2, tok2 := storetest.Session(t, h.Store, a.User.ID, func(x *domain.AdminSession) { x.IP, x.UserAgent = "198.51.100.20", "Firefox" })
+	h.Clock.Advance(time.Minute)
+	_, tok3 := storetest.Session(t, h.Store, a.User.ID)
+	expired, _ := storetest.Session(t, h.Store, a.User.ID, func(x *domain.AdminSession) { x.ExpiresAt = h.Clock.Now().Add(-time.Second) })
+	b := h.newAdmin(domain.RoleViewer)
+
+	var list struct {
+		Items []map[string]any `json:"items"`
+	}
+	a.get("/auth/sessions").status(http.StatusOK).decode(&list)
+	require.Len(t, list.Items, 3, "own unexpired sessions only")
+	ids := []string{}
+	current := 0
+	for _, s := range list.Items {
+		ids = append(ids, s["id"].(string))
+		if s["current"] == true {
+			current++
+			assert.Equal(t, a.Sess.ID.String(), s["id"])
+		}
+	}
+	assert.Equal(t, 1, current)
+	assert.NotContains(t, ids, expired.ID.String())
+	assert.NotContains(t, ids, b.Sess.ID.String())
+	assert.Equal(t, []string{ids[0], ids[1], ids[2]}, ids)
+	assert.Equal(t, "198.51.100.20", list.Items[1]["ip"], "newest first")
+	assert.Equal(t, "Firefox", list.Items[1]["user_agent"])
+
+	// Isolation: another user's session → 404, nothing deleted.
+	a.del("/auth/sessions/"+b.Sess.ID.String()).apiError(http.StatusNotFound, CodeNotFound)
+	b.get("/auth/me").status(http.StatusOK)
+	a.del("/auth/sessions/"+uuid.NewString()).apiError(http.StatusNotFound, CodeNotFound)
+	a.del("/auth/sessions/not-a-uuid").apiError(http.StatusNotFound, CodeNotFound)
+
+	a.del("/auth/sessions/" + s2.ID.String()).status(http.StatusNoContent)
+	h.do(http.MethodGet, "/api/admin/auth/me", nil, sessionCookie(tok2)).apiError(http.StatusUnauthorized, CodeUnauthorized)
+	h.do(http.MethodGet, "/api/admin/auth/me", nil, sessionCookie(tok3)).status(http.StatusOK)
+
+	var revoked struct {
+		Revoked int `json:"revoked"`
+	}
+	a.post("/auth/sessions/revoke-others", nil).status(http.StatusOK).decode(&revoked)
+	assert.Equal(t, 2, revoked.Revoked, "the third session and the expired one")
+	h.do(http.MethodGet, "/api/admin/auth/me", nil, sessionCookie(tok3)).apiError(http.StatusUnauthorized, CodeUnauthorized)
+	a.get("/auth/me").status(http.StatusOK)
+	b.get("/auth/me").status(http.StatusOK)
+
+	// Deleting the current session signs out (cookie cleared).
+	r := a.del("/auth/sessions/" + a.Sess.ID.String()).status(http.StatusNoContent)
+	ck := sessionFrom(t, r)
+	require.NotNil(t, ck)
+	assert.Less(t, ck.MaxAge, 0)
+	a.get("/auth/me").apiError(http.StatusUnauthorized, CodeUnauthorized)
+
+	assert.Len(t, h.auditLogs("auth.session_revoke"), 2)
+	assert.Len(t, h.auditLogs("auth.sessions_revoke_others"), 1)
+	// CSRF applies.
+	h.do(http.MethodPost, "/api/admin/auth/sessions/revoke-others", nil, sessionCookie(b.Token)).apiError(http.StatusForbidden, CodeForbidden)
 }

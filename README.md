@@ -97,6 +97,10 @@ docker compose ps                   # 等待 backend 显示 healthy
 
   该命令删除此用户的两步验证、退出其所有会话、写入审计日志（操作人 `cli:reset-2fa`），并在配置了邮件时通知该用户。之后可以只用密码登录；若开启了“要求两步验证”，登录后需重新设置。
 
+### 会话管理
+
+“账户安全”页列出自己当前所有有效会话（登录时的 IP 与浏览器，标出当前设备），可以退出单个会话或一次退出其他所有会话。修改密码、启用两步验证也会退出其他会话。
+
 ### 邮件通知
 
 配置 SMTP（见下文“配置参考”与 `.env.example`）后，网关通过发件箱（失败按 `min(2^n × 30s, 2h)` 重试，最多 8 次）发送：
@@ -219,7 +223,7 @@ make lint           # gofmt / go vet / eslint / tsc
 - **非托管 / 只读**：网关只保存扩展**公钥**或固定地址，只调用只读 RPC，不签名、不广播交易。资金归集（sweep）由商户自己持有助记词的钱包软件完成，不在本系统范围内。
 - **永远不要粘贴私钥或助记词**。`xprv` 等私钥会被拒绝；任何要求你在后台输入助记词的指引都是错误的。
 - `APP_SECRET` 加密数据库中的 RPC 地址（常含 API key）和 webhook 签名密钥；API key 与会话令牌只保存 SHA-256 哈希。丢失 `APP_SECRET` 会导致这些密文无法解密，泄露则需要轮换所有 RPC key 与 webhook 密钥。
-- 管理后台：HttpOnly + SameSite=Lax 会话 cookie（生产环境 Secure）、所有写操作要求 `X-Requested-With: cryptopay`（CSRF 防护）、登录失败按 IP+邮箱限流、可选（或强制）TOTP 两步验证与一次性恢复码、安全事件邮件通知、owner / admin / viewer 三级权限，所有修改写入审计日志（不含密钥、密码、验证码和完整 RPC 地址）。
+- 管理后台：HttpOnly + SameSite=Lax 会话 cookie（生产环境 Secure）、所有写操作要求 `X-Requested-With: cryptopay`（CSRF 防护）、登录失败按 IP+邮箱限流、可选（或强制）TOTP 两步验证与一次性恢复码、会话管理、安全事件邮件通知、owner / admin / viewer 三级权限，所有修改写入审计日志（不含密钥、密码、验证码和完整 RPC 地址）。
 - 账单 UUID 即收银台的访问凭证：不要在公开场合泄露 `checkout_url`。
 
 ### 生产环境检查清单

@@ -8,7 +8,7 @@
 // paging, filters, and an audit entry for every mutation. Two-factor
 // authentication is real RFC 6238 TOTP (the seeded `mfa@` account uses the
 // fixed DEMO_TOTP_SECRET printed at startup), with recovery codes, sign-in
-// challenges, `require_2fa` enforcement and an e-mail outbox.
+// challenges, `require_2fa` enforcement, sessions and an e-mail outbox.
 
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
@@ -658,6 +658,21 @@ export function createAdminMock(ctx) {
       lastStep: 0,
       recoveryCodes: DEMO_RECOVERY_CODES.map((c) => ({ hash: sha256(c), used: false })),
     });
+    // The owner is also signed in on two other devices (shown on /admin/security).
+    const owner0 = S.users[0];
+    for (const [ua, ip, ageH] of [
+      ["Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1", "198.51.100.7", 30],
+      ["Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0", "203.0.113.50", 70],
+    ]) {
+      S.sessions.set(randomBytes(24).toString("base64url"), {
+        id: uuidFrom(rng),
+        userId: owner0.id,
+        created: t0 - ageH * 3600 * 1000,
+        expires: t0 - ageH * 3600 * 1000 + SESSION_MAX_AGE * 1000,
+        ip,
+        ua,
+      });
+    }
 
     // merchants
     const merchantDefs = [
@@ -1086,8 +1101,8 @@ export function createAdminMock(ctx) {
     const facts = Object.entries(vars).map(([k, v]) => `  ${k}: ${v}`);
     const notYou =
       lang === "zh"
-        ? "如果这不是你本人或你的同事的操作，请立即登录管理后台修改密码、检查「账户安全」，并联系所有者。"
-        : "If this wasn't you or a colleague, sign in now, change your password, check Account security and contact an Owner.";
+        ? "如果这不是你本人或你的同事的操作，请立即登录管理后台修改密码、检查「账户安全」中的登录会话，并联系所有者。"
+        : "If this wasn't you or a colleague, sign in now, change your password, review the sessions under Account security and contact an Owner.";
     const body = [
       lang === "zh" ? "你好，" : "Hello,",
       "",
@@ -1189,7 +1204,7 @@ export function createAdminMock(ctx) {
     const logins = S.audit.filter((l) => l.action === "auth.login" && l.target_id === u.id);
     if (logins.length > 0 && !logins.some((l) => l.ip === ip)) enqueueMail("security.new_login", u.email, { ip, user_agent: ua || "-" });
     const token = randomBytes(24).toString("base64url");
-    S.sessions.set(token, { userId: u.id, expires: now() + SESSION_MAX_AGE * 1000 });
+    S.sessions.set(token, { id: randomUUID(), userId: u.id, created: now(), expires: now() + SESSION_MAX_AGE * 1000, ip, ua: String(ua ?? "").slice(0, 512) });
     u.last_login_at = iso(now());
     audit(u, "auth.login", "user", u.id, null, ip);
     return {
@@ -1281,6 +1296,7 @@ export function createAdminMock(ctx) {
         return { status: 204 };
       }
       if (b === "2fa") return twoFactorRoute(user, token, ip, method, c, body);
+      if (b === "sessions") return sessionsRoute(user, token, ip, method, c, body);
       throw notFound("endpoint");
     }
 
@@ -1479,6 +1495,42 @@ export function createAdminMock(ctx) {
       audit(user, "auth.recovery_codes", "admin_user", user.id, null, ip);
       enqueueMail("security.recovery_codes", user.email, { ip });
       return { body: { recovery_codes: codes } };
+    }
+    throw notFound("endpoint");
+  }
+
+  // ---- own sessions --------------------------------------------------------------
+
+  function sessionsRoute(user, token, ip, method, id) {
+    const own = () =>
+      [...S.sessions.entries()]
+        .filter(([, s]) => s.userId === user.id && s.expires > now())
+        .sort((x, y) => y[1].created - x[1].created);
+    if (!id && method === "GET") {
+      return {
+        body: {
+          items: own().map(([tok, s]) => ({
+            id: s.id,
+            ip: s.ip ?? "",
+            user_agent: s.ua ?? "",
+            created_at: iso(s.created ?? now()),
+            expires_at: iso(s.expires),
+            current: tok === token,
+          })),
+        },
+      };
+    }
+    if (id === "revoke-others" && method === "POST") {
+      const n = signOutUser(user.id, token);
+      audit(user, "auth.sessions_revoke_others", "admin_user", user.id, { revoked: n }, ip);
+      return { body: { revoked: n } };
+    }
+    if (id && method === "DELETE") {
+      const hit = own().find(([, s]) => s.id === id);
+      if (!hit) throw notFound("session");
+      S.sessions.delete(hit[0]);
+      audit(user, "auth.session_revoke", "admin_user", user.id, { session_id: id }, ip);
+      return hit[0] === token ? { status: 204, headers: CLEAR_COOKIE } : { status: 204 };
     }
     throw notFound("endpoint");
   }

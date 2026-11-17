@@ -168,7 +168,7 @@ func TestLoginChallenges(t *testing.T) {
 	assert.EqualValues(t, 1, gone)
 }
 
-func TestLoginHistoryAndReset(t *testing.T) {
+func TestUserSessionsAndLoginHistory(t *testing.T) {
 	t.Parallel()
 	clock := storetest.FixedClock(time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC))
 	s := storetest.New(t, store.WithClock(clock.Now))
@@ -180,10 +180,20 @@ func TestLoginHistoryAndReset(t *testing.T) {
 	assert.False(t, before)
 	assert.False(t, seen)
 
-	storetest.Session(t, s, u.ID, func(x *domain.AdminSession) { x.IP = "192.0.2.1" })
+	s1, _ := storetest.Session(t, s, u.ID, func(x *domain.AdminSession) { x.IP = "192.0.2.1" })
 	clock.Advance(time.Minute)
+	s2, _ := storetest.Session(t, s, u.ID, func(x *domain.AdminSession) { x.IP = "192.0.2.2" })
 	storetest.Session(t, s, u.ID, func(x *domain.AdminSession) { x.ExpiresAt = clock.Now().Add(-time.Second) })
-	storetest.Session(t, s, v.ID)
+	vs, _ := storetest.Session(t, s, v.ID)
+
+	list, err := s.ListUserSessions(ctx, u.ID, clock.Now())
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+	assert.Equal(t, []uuid.UUID{s2.ID, s1.ID}, []uuid.UUID{list[0].ID, list[1].ID}, "newest first")
+
+	require.ErrorIs(t, s.DeleteUserSession(ctx, u.ID, vs.ID), store.ErrNotFound, "another user's session")
+	require.NoError(t, s.DeleteUserSession(ctx, u.ID, s2.ID))
+	require.ErrorIs(t, s.DeleteUserSession(ctx, u.ID, s2.ID), store.ErrNotFound)
 
 	before, seen, err = s.LoginHistory(ctx, u.ID, "192.0.2.1")
 	require.NoError(t, err)
@@ -232,7 +242,7 @@ func TestLoginHistoryAndReset(t *testing.T) {
 	}))
 	assert.False(t, reset, "nothing to reset")
 	assert.Zero(t, n)
-	var left int
-	require.NoError(t, s.Pool().QueryRow(ctx, `SELECT count(*) FROM admin_sessions WHERE user_id = $1`, v.ID).Scan(&left))
-	assert.Equal(t, 1, left, "a user without 2FA keeps the sessions")
+	list, err = s.ListUserSessions(ctx, v.ID, clock.Now())
+	require.NoError(t, err)
+	assert.Len(t, list, 1, "a user without 2FA keeps the sessions")
 }

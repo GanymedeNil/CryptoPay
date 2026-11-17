@@ -274,6 +274,32 @@ func (s *Store) DeleteExpiredLoginChallenges(ctx context.Context, now time.Time)
 
 // ---- session management ----
 
+// ListUserSessions returns a user's sessions that have not expired at now,
+// newest first.
+func (s *Store) ListUserSessions(ctx context.Context, userID uuid.UUID, now time.Time) ([]domain.AdminSession, error) {
+	const op = "list user sessions"
+	rows, err := s.db.Query(ctx, `SELECT `+sessionCols+` FROM admin_sessions se
+		WHERE se.user_id = $1 AND se.expires_at > $2 ORDER BY se.created_at DESC, se.id DESC`, userID, now.UTC())
+	if err != nil {
+		return nil, wrap(op, err)
+	}
+	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (domain.AdminSession, error) { return scanSession(r) })
+	return nonNil(out), wrap(op, err)
+}
+
+// DeleteUserSession deletes one session of a user. ErrNotFound when the
+// session does not exist or belongs to someone else.
+func (s *Store) DeleteUserSession(ctx context.Context, userID, id uuid.UUID) error {
+	tag, err := s.db.Exec(ctx, `DELETE FROM admin_sessions WHERE id = $1 AND user_id = $2`, id, userID)
+	if err != nil {
+		return wrap("delete user session", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return wrap("delete user session", ErrNotFound)
+	}
+	return nil
+}
+
 // LoginHistory tells whether a user has signed in before (a successful
 // sign-in in the audit log, or any session), and whether ip was used by any
 // of those. Call it before recording the current sign-in.

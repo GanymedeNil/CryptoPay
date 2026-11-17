@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, type RenderOptions } from "@testing-library/react";
 import { AuthProvider } from "@/components/admin/auth";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import type { AdminMe, AdminRole, AdminUser, Chain, EmailMessage, Merchant, Settings, Wallet } from "@/lib/api/types";
+import type { AdminMe, AdminRole, AdminSession, AdminUser, Chain, EmailMessage, Merchant, Settings, Wallet } from "@/lib/api/types";
 import type { Locale } from "@/lib/i18n/config";
 import { I18nProvider } from "@/lib/i18n/provider";
 
@@ -22,6 +22,18 @@ export function adminUser(role: AdminRole = "owner", overrides: Partial<AdminUse
 /** `GET /auth/me` answer for a user. */
 export function adminMe(role: AdminRole = "owner", overrides: Partial<AdminMe> = {}): AdminMe {
   return { ...adminUser(role), two_factor_setup_required: false, ...overrides };
+}
+
+export function sessionFixture(overrides: Partial<AdminSession> = {}): AdminSession {
+  return {
+    id: "s-1",
+    ip: "203.0.113.24",
+    user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36",
+    created_at: "2026-11-16T07:00:00Z",
+    expires_at: "2026-11-23T07:00:00Z",
+    current: true,
+    ...overrides,
+  };
 }
 
 export function emailFixture(overrides: Partial<EmailMessage> = {}): EmailMessage {

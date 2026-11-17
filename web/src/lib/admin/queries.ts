@@ -28,6 +28,7 @@ import { describeError } from "./errors";
 export const adminKeys = {
   all: ["admin"] as const,
   me: ["admin", "me"] as const,
+  sessions: ["admin", "sessions"] as const,
   overview: {
     all: ["admin", "overview"] as const,
     range: (days: number) => ["admin", "overview", days] as const,
@@ -191,6 +192,15 @@ export function useAuditLogs(q: AuditLogQuery) {
     queryKey: adminKeys.auditLogs.list(q),
     queryFn: ({ signal }) => adminApi.listAuditLogs(q, { signal }),
     placeholderData: keepPreviousData,
+  });
+}
+
+/** The caller's own sessions (`GET /auth/sessions`). */
+export function useSessions() {
+  return useQuery({
+    queryKey: adminKeys.sessions,
+    queryFn: ({ signal }) => adminApi.listSessions({ signal }),
+    select: (r) => r.items,
   });
 }
 

@@ -120,8 +120,8 @@ func TestContractResponses(t *testing.T) {
 	c.ok("POST /api/admin/auth/logout", vc.post("/auth/logout", nil))
 	c.fail("admin 401", vc.get("/auth/me"), http.StatusUnauthorized)
 
-	// ---- admin: two-factor authentication ----
-	mfa := h.newAdmin(domain.RoleViewer) // viewers manage their own 2FA
+	// ---- admin: two-factor authentication, sessions ----
+	mfa := h.newAdmin(domain.RoleViewer) // viewers manage their own 2FA and sessions
 	setup := c.ok("POST /api/admin/auth/2fa/setup", mfa.post("/auth/2fa/setup", map[string]any{"current_password": storetest.Password}))
 	secret := setup["secret"].(string)
 	nonEmpty(t, c.ok("POST /api/admin/auth/2fa/enable", mfa.post("/auth/2fa/enable", map[string]any{"code": h.totp(secret)})), "recovery_codes")
@@ -138,7 +138,18 @@ func TestContractResponses(t *testing.T) {
 	c.fail("login 2fa 401", h.login2FA(map[string]any{"challenge_token": "nope", "code": "000000"}), http.StatusUnauthorized)
 	login2 := h.login2FA(map[string]any{"challenge_token": challenge.(map[string]any)["challenge_token"], "code": h.totp(secret)})
 	c.ok("POST /api/admin/auth/login/2fa", login2)
-	require.NotNil(t, sessionFrom(t, login2))
+	second := &adminClient{h: h, User: mfa.User, Token: sessionFrom(t, login2).Value}
+	sessions := c.ok("GET /api/admin/auth/sessions", mfa.get("/auth/sessions"))
+	require.Len(t, sessions["items"], 2)
+	var otherID string
+	for _, x := range sessions["items"].([]any) {
+		if s := x.(map[string]any); s["current"] == false {
+			otherID = s["id"].(string)
+		}
+	}
+	c.ok("DELETE /api/admin/auth/sessions/{id}", mfa.del("/auth/sessions/"+otherID))
+	c.fail("session 401 after revoke", second.get("/auth/me"), http.StatusUnauthorized)
+	c.ok("POST /api/admin/auth/sessions/revoke-others", mfa.post("/auth/sessions/revoke-others", nil))
 	h.nextStep()
 	c.ok("POST /api/admin/auth/2fa/disable", mfa.post("/auth/2fa/disable", map[string]any{"current_password": storetest.Password, "code": h.totp(secret)}))
 	c.fail("2fa 400 fields", mfa.post("/auth/2fa/setup", map[string]any{"current_password": "wrong"}), http.StatusBadRequest)

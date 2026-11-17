@@ -58,6 +58,9 @@ func (a *API) adminRoutes(r chi.Router) {
 			// Own account, any role.
 			r.Post("/auth/2fa/disable", a.twoFactorDisable)
 			r.Post("/auth/2fa/recovery-codes", a.twoFactorRecoveryCodes)
+			r.Get("/auth/sessions", a.listSessions)
+			r.Delete("/auth/sessions/{id}", a.deleteSession)
+			r.Post("/auth/sessions/revoke-others", a.revokeOtherSessions)
 
 			r.Get("/email/status", a.emailStatus)
 

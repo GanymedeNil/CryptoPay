@@ -90,3 +90,41 @@ export function emailKindLabel(t: TranslateFn, kind: string): string {
   const info = EMAIL_KINDS.find((k) => k.kind === kind);
   return info ? t(info.label) : kind;
 }
+
+// ---- user agents ------------------------------------------------------------
+
+/**
+ * A short "Browser · OS" description of a session's user agent, or null when
+ * it can't be recognised (the raw string is then shown).
+ */
+export function describeUserAgent(ua: string): { browser: string | null; os: string | null } | null {
+  if (!ua) return null;
+  const browser = /Edg(e|A|iOS)?\//.test(ua)
+    ? "Edge"
+    : /OPR\/|Opera/.test(ua)
+      ? "Opera"
+      : /Firefox\/|FxiOS\//.test(ua)
+        ? "Firefox"
+        : /Chrome\/|CriOS\//.test(ua)
+          ? "Chrome"
+          : /Safari\//.test(ua) && /Version\//.test(ua)
+            ? "Safari"
+            : /^curl\//.test(ua)
+              ? "curl"
+              : null;
+  const os = /iPhone|iPad|iPod/.test(ua)
+    ? "iOS"
+    : /Android/.test(ua)
+      ? "Android"
+      : /Windows/.test(ua)
+        ? "Windows"
+        : /Mac OS X|Macintosh/.test(ua)
+          ? "macOS"
+          : /CrOS/.test(ua)
+            ? "ChromeOS"
+            : /Linux/.test(ua)
+              ? "Linux"
+              : null;
+  if (!browser && !os) return null;
+  return { browser, os };
+}

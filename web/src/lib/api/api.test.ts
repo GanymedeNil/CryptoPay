@@ -172,7 +172,7 @@ describe("endpoint modules", () => {
     expect(calls[7].headers["X-Requested-With"]).toBe("cryptopay");
   });
 
-  it("admin: two-factor and e-mail endpoints", async () => {
+  it("admin: two-factor, sessions and e-mail endpoints", async () => {
     const { calls, client } = recorder();
     const api = createAdminApi(client);
     await api.loginTwoFactor({ challenge_token: "ch", code: "123456" });
@@ -180,6 +180,9 @@ describe("endpoint modules", () => {
     await api.enableTwoFactor({ code: "123456" });
     await api.disableTwoFactor({ current_password: "pw", code: "abcde-12345" });
     await api.regenerateRecoveryCodes({ current_password: "pw", code: "123456" });
+    await api.listSessions();
+    await api.revokeSession("s/1");
+    await api.revokeOtherSessions();
     await api.resetUserTwoFactor("u1");
     await api.getEmailStatus();
     await api.sendTestEmail();
@@ -193,6 +196,9 @@ describe("endpoint modules", () => {
       "POST /api/admin/auth/2fa/enable",
       "POST /api/admin/auth/2fa/disable",
       "POST /api/admin/auth/2fa/recovery-codes",
+      "GET /api/admin/auth/sessions",
+      "DELETE /api/admin/auth/sessions/s%2F1",
+      "POST /api/admin/auth/sessions/revoke-others",
       "DELETE /api/admin/users/u1/2fa",
       "GET /api/admin/email/status",
       "POST /api/admin/email/test",
@@ -202,8 +208,8 @@ describe("endpoint modules", () => {
       "POST /api/admin/email/outbox/e1/retry",
     ]);
     expect(calls[0].body).toBe('{"challenge_token":"ch","code":"123456"}');
-    expect(calls[7].body).toBe("{}");
-    expect(calls[8].body).toBe('{"to":"a@b.c"}');
+    expect(calls[10].body).toBe("{}");
+    expect(calls[11].body).toBe('{"to":"a@b.c"}');
     for (const c of calls.filter((x) => x.method !== "GET")) expect(c.headers["X-Requested-With"]).toBe("cryptopay");
   });
 

@@ -1,7 +1,8 @@
 "use client";
 
 import { useQueryClient } from "@tanstack/react-query";
-import { KeyRoundIcon, RefreshCwIcon, ShieldCheckIcon, ShieldOffIcon } from "lucide-react";
+import { KeyRoundIcon, LaptopIcon, LogOutIcon, MonitorSmartphoneIcon, RefreshCwIcon, ShieldCheckIcon, ShieldOffIcon } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -9,21 +10,25 @@ import { FieldGroup } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { describeError } from "@/lib/admin/errors";
-import { adminKeys, useAdminMutation } from "@/lib/admin/queries";
-import { normalizeOtp, normalizeRecoveryCode } from "@/lib/admin/two-factor";
+import { adminKeys, useAdminMutation, useSessions } from "@/lib/admin/queries";
+import { describeUserAgent, normalizeOtp, normalizeRecoveryCode } from "@/lib/admin/two-factor";
 import { adminApi } from "@/lib/api/admin";
 import { isApiError } from "@/lib/api/client";
-import type { AdminMe } from "@/lib/api/types";
+import type { AdminMe, AdminSession } from "@/lib/api/types";
 import { useT } from "@/lib/i18n";
-import { useAuth } from "../auth";
+import { loginUrl, useAuth } from "../auth";
+import { ConfirmDialog } from "../confirm-dialog";
+import { DataTable, type Column } from "../data-table";
 import { describedBy, FormError, FormField } from "../form-field";
 import { PageHeader, Section } from "../page-header";
 import { ChangePasswordDialog } from "../shell/change-password-dialog";
+import { EmptyState } from "../states";
 import { StatusBadge } from "../status-badge";
+import { RelativeTime } from "../time";
 import { RecoveryCodesPanel } from "../two-factor/recovery-codes";
 import { TwoFactorSetupDialog } from "../two-factor/setup-wizard";
 
-/** `/admin/security`: the signed-in admin's own 2FA and password (every role). */
+/** `/admin/security`: the signed-in admin's own 2FA, sessions and password (every role). */
 export function SecurityPage() {
   const t = useT();
   return (
@@ -31,6 +36,7 @@ export function SecurityPage() {
       <PageHeader title={t("admin.security.title")} description={t("admin.security.description")} />
       <div className="space-y-4">
         <TwoFactorCard />
+        <SessionsCard />
         <PasswordCard />
       </div>
     </>
@@ -313,6 +319,131 @@ function RegenerateCodesDialog({ open, onOpenChange, email }: { open: boolean; o
         </DialogContent>
       )}
     </Dialog>
+  );
+}
+
+// ---- sessions ---------------------------------------------------------------
+
+export function SessionsCard() {
+  const t = useT();
+  const router = useRouter();
+  const qc = useQueryClient();
+  const sessions = useSessions();
+  const [revoking, setRevoking] = useState<AdminSession | null>(null);
+  const [othersOpen, setOthersOpen] = useState(false);
+
+  const revoke = useAdminMutation({
+    mutationFn: (s: AdminSession) => adminApi.revokeSession(s.id),
+    // The current session is gone after this: refetching would only 401.
+    invalidate: (_r, s) => (s.current ? [] : [adminKeys.sessions]),
+    successMessage: (_r, s) => (s.current ? "" : t("admin.sessions.revoked")),
+    onSuccess: (_r, s) => {
+      if (!s.current) return;
+      // Signing out this device is a logout.
+      qc.clear();
+      router.replace(loginUrl("/admin", "signedOut"));
+    },
+  });
+  const revokeOthers = useAdminMutation({
+    mutationFn: () => adminApi.revokeOtherSessions(),
+    invalidate: [adminKeys.sessions],
+    successMessage: (r) => t("admin.sessions.revokedOthers", { n: r.revoked }),
+  });
+  const others = (sessions.data ?? []).filter((s) => !s.current).length;
+
+  const columns: Column<AdminSession>[] = [
+    {
+      id: "device",
+      header: t("admin.sessions.columns.device"),
+      cell: (s) => <SessionDevice session={s} />,
+    },
+    { id: "ip", header: t("admin.sessions.columns.ip"), cell: (s) => <span className="font-mono text-xs">{s.ip || "—"}</span> },
+    { id: "created", header: t("admin.sessions.columns.signedIn"), cell: (s) => <RelativeTime iso={s.created_at} /> },
+    { id: "expires", header: t("admin.sessions.columns.expires"), cell: (s) => <RelativeTime iso={s.expires_at} className="text-muted-foreground" /> },
+    {
+      id: "actions",
+      header: <span className="sr-only">{t("admin.common.actions")}</span>,
+      align: "right",
+      cell: (s) => (
+        <Button variant="outline" size="xs" onClick={() => setRevoking(s)} aria-label={`${s.current ? t("admin.sessions.revokeCurrent") : t("admin.sessions.revoke")}: ${s.ip}`}>
+          <LogOutIcon data-icon="inline-start" aria-hidden />
+          {s.current ? t("admin.sessions.revokeCurrent") : t("admin.sessions.revoke")}
+        </Button>
+      ),
+    },
+  ];
+
+  return (
+    <Section
+      id="sessions"
+      title={t("admin.sessions.title")}
+      description={t("admin.sessions.description")}
+      actions={
+        <Button variant="outline" size="sm" disabled={others === 0 || revokeOthers.isPending} onClick={() => setOthersOpen(true)} title={others === 0 ? t("admin.sessions.noOthers") : undefined}>
+          <LogOutIcon data-icon="inline-start" aria-hidden />
+          {t("admin.sessions.revokeOthers")}
+        </Button>
+      }
+      bodyClassName="p-0"
+    >
+      <DataTable
+        caption={t("admin.sessions.title")}
+        columns={columns}
+        rows={sessions.data}
+        getRowId={(s) => s.id}
+        isLoading={sessions.isPending}
+        error={sessions.error}
+        onRetry={() => void sessions.refetch()}
+        className="[&>div]:rounded-none [&>div]:border-0"
+        empty={<EmptyState icon={MonitorSmartphoneIcon} title={t("admin.sessions.emptyTitle")} description={t("admin.sessions.emptyBody")} />}
+        mobileCard={(s) => (
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 space-y-1">
+              <SessionDevice session={s} />
+              <p className="text-xs text-muted-foreground">
+                <span className="font-mono">{s.ip || "—"}</span> · <RelativeTime iso={s.created_at} />
+              </p>
+            </div>
+            <Button variant="outline" size="xs" onClick={() => setRevoking(s)}>
+              {s.current ? t("admin.sessions.revokeCurrent") : t("admin.sessions.revoke")}
+            </Button>
+          </div>
+        )}
+      />
+      <ConfirmDialog
+        open={revoking !== null}
+        onOpenChange={(o) => !o && setRevoking(null)}
+        title={revoking?.current ? t("admin.sessions.revokeCurrentTitle") : t("admin.sessions.revokeTitle")}
+        description={revoking?.current ? t("admin.sessions.revokeCurrentBody") : t("admin.sessions.revokeBody")}
+        confirmLabel={revoking?.current ? t("admin.sessions.revokeCurrent") : t("admin.sessions.revoke")}
+        destructive
+        onConfirm={() => revoking && revoke.mutateAsync(revoking)}
+      />
+      <ConfirmDialog
+        open={othersOpen}
+        onOpenChange={setOthersOpen}
+        title={t("admin.sessions.revokeOthersTitle")}
+        description={t("admin.sessions.revokeOthersBody")}
+        confirmLabel={t("admin.sessions.revokeOthers")}
+        destructive
+        onConfirm={() => revokeOthers.mutateAsync()}
+      />
+    </Section>
+  );
+}
+
+function SessionDevice({ session }: { session: AdminSession }) {
+  const t = useT();
+  const ua = describeUserAgent(session.user_agent);
+  const label = ua ? [ua.browser, ua.os].filter(Boolean).join(" · ") : session.user_agent || t("admin.sessions.unknownDevice");
+  return (
+    <span className="flex min-w-0 items-center gap-2">
+      <LaptopIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+      <span className="truncate" title={session.user_agent || undefined}>
+        {label}
+      </span>
+      {session.current && <StatusBadge tone="info">{t("admin.sessions.current")}</StatusBadge>}
+    </span>
   );
 }
 
