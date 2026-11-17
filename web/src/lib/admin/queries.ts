@@ -13,6 +13,7 @@ import type {
   AdminInvoiceQuery,
   AuditLogQuery,
   EmailOutboxQuery,
+  MerchantOverviewQuery,
   MerchantQuery,
   TransferQuery,
   WebhookEventQuery,
@@ -31,7 +32,9 @@ export const adminKeys = {
   sessions: ["admin", "sessions"] as const,
   overview: {
     all: ["admin", "overview"] as const,
-    range: (days: number) => ["admin", "overview", days] as const,
+    /** `merchantId` null = every merchant. */
+    range: (days: number, merchantId: string | null = null) => ["admin", "overview", "totals", { days, merchantId }] as const,
+    merchants: (q: MerchantOverviewQuery) => ["admin", "overview", "merchants", q] as const,
   },
   invoices: {
     all: ["admin", "invoices"] as const,
@@ -79,12 +82,26 @@ export function useMe() {
   });
 }
 
-export function useOverview(days: number) {
+/** `GET /overview`, restricted to one merchant when `merchantId` is given. */
+export function useOverview(days: number, merchantId?: string | null) {
   return useQuery({
-    queryKey: adminKeys.overview.range(days),
-    queryFn: ({ signal }) => adminApi.getOverview({ days }, { signal }),
+    queryKey: adminKeys.overview.range(days, merchantId || null),
+    queryFn: ({ signal }) => adminApi.getOverview({ days, merchant_id: merchantId || undefined }, { signal }),
+    // Keep the previous numbers while the range changes, not across merchants
+    // (another merchant's figures under this one's name would mislead).
+    placeholderData: (prev) => ((prev?.merchant_id ?? null) === (merchantId || null) ? prev : undefined),
+    refetchInterval: 60_000,
+  });
+}
+
+/** `GET /overview/merchants`: the per-merchant comparison (server-side sort and paging). */
+export function useMerchantOverviews(q: MerchantOverviewQuery, enabled = true) {
+  return useQuery({
+    queryKey: adminKeys.overview.merchants(q),
+    queryFn: ({ signal }) => adminApi.listMerchantOverviews(q, { signal }),
     placeholderData: keepPreviousData,
     refetchInterval: 60_000,
+    enabled,
   });
 }
 
@@ -129,10 +146,11 @@ export function useAllMerchants() {
   return useMerchants({ page: 1, page_size: 100 });
 }
 
-export function useMerchant(id: string) {
+export function useMerchant(id: string, enabled = true) {
   return useQuery({
     queryKey: adminKeys.merchants.detail(id),
     queryFn: ({ signal }) => adminApi.getMerchant(id, { signal }),
+    enabled,
   });
 }
 

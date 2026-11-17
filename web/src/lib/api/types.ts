@@ -490,6 +490,8 @@ export type EmailLocale = "zh" | "en";
 
 export interface Overview {
   range_days: number;
+  /** The `merchant_id` filter; null = every merchant. */
+  merchant_id: string | null;
   totals: {
     invoices: number;
     paid_invoices: number;
@@ -517,6 +519,29 @@ export interface Overview {
     volume_usd: string;
   }[];
   by_status: { status: InvoiceStatus; count: number }[];
+}
+
+/** One merchant's figures over the range (`GET /overview/merchants`); every merchant has a row. */
+export interface MerchantOverview {
+  merchant_id: string;
+  merchant_name: string;
+  status: "active" | "disabled";
+  /** Created in range. */
+  invoices: number;
+  /** Paid in range (by paid_at). */
+  paid_invoices: number;
+  /** Sum of amount_usd of invoices paid in range. */
+  volume_usd: string;
+  /** Created in range and now paid ÷ created in range (0 when none). */
+  conversion_rate: number;
+  /** Currently open (pending/partial/confirming), not range-limited. */
+  open_invoices: number;
+  /** Currently failed events, not range-limited. */
+  failed_webhooks: number;
+  /** Newest invoice ever created. */
+  last_invoice_at: string | null;
+  /** Newest paid_at ever. */
+  last_paid_at: string | null;
 }
 
 // ---- Admin request / response bodies (inline in the api.md table) ----------
@@ -602,7 +627,32 @@ export interface ChangePasswordRequest {
 export interface OverviewQuery {
   /** 1..365, default 30. */
   days?: number;
+  /** Restrict every figure to this merchant (unmatched_transfers is then 0). */
+  merchant_id?: string;
 }
+
+export type MerchantOverviewSort =
+  | "volume_usd"
+  | "invoices"
+  | "paid_invoices"
+  | "conversion_rate"
+  | "open_invoices"
+  | "failed_webhooks"
+  | "name";
+
+export type SortOrder = "asc" | "desc";
+
+export interface MerchantOverviewQuery extends PageQuery {
+  /** 1..365, default 30 (as `GET /overview`). */
+  days?: number;
+  /** Default `volume_usd`. */
+  sort?: MerchantOverviewSort;
+  /** Default `desc` (`asc` for `name`). */
+  order?: SortOrder;
+}
+
+/** `GET /overview/merchants` → `Page<MerchantOverview> & { range_days: number }`. */
+export type MerchantOverviewPage = Page<MerchantOverview> & { range_days: number };
 
 export interface AdminInvoiceQuery extends PageQuery {
   status?: InvoiceStatus;

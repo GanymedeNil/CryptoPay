@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRightIcon } from "lucide-react";
+import { ArrowRightIcon, GlobeIcon } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -15,6 +15,7 @@ import { useLocale, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { Section } from "../page-header";
 import { ErrorState } from "../states";
+import { StatusBadge } from "../status-badge";
 
 const HEALTH_DOT: Record<ChainHealth, string> = {
   ok: "bg-success",
@@ -28,15 +29,29 @@ const HEALTH_DOT: Record<ChainHealth, string> = {
  * One tile per enabled chain: scanner lag as a meter, last scan, last error.
  * The meter is the scanner's distance to the chain head relative to the
  * confirmation depth (full = at least that many blocks behind).
+ * `systemWide` labels it as not affected by the overview's merchant filter.
  */
-export function ChainHealthStrip() {
+export function ChainHealthStrip({ systemWide = false }: { systemWide?: boolean }) {
   const t = useT();
   const chains = useChains();
   const enabled = chains.data?.filter((c) => c.enabled) ?? [];
   return (
     <Section
-      title={t("admin.overview.chainHealth.title")}
-      description={t("admin.overview.chainHealth.description")}
+      title={
+        systemWide ? (
+          <span className="flex flex-wrap items-center gap-2">
+            {t("admin.overview.chainHealth.title")}
+            <StatusBadge tone="neutral" dot={false}>
+              <GlobeIcon className="size-3" aria-hidden />
+              {t("admin.overview.chainHealth.systemWide")}
+            </StatusBadge>
+          </span>
+        ) : (
+          t("admin.overview.chainHealth.title")
+        )
+      }
+      description={systemWide ? t("admin.overview.chainHealth.systemWideHint") : t("admin.overview.chainHealth.description")}
+      className={cn(systemWide && "border-dashed bg-card/60")}
       actions={
         <Button asChild variant="ghost" size="sm">
           <Link href="/admin/chains">

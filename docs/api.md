@@ -250,10 +250,26 @@ interface Settings {
 
 interface Overview {
   range_days: number;
+  merchant_id: string | null;    // the merchant_id filter, null = every merchant
   totals: { invoices: number; paid_invoices: number; open_invoices: number; volume_usd: string; conversion_rate: number /* 0..1 */; unmatched_transfers: number; failed_webhooks: number; };
   daily: { date: string /* YYYY-MM-DD */; invoices: number; paid: number; volume_usd: string }[];  // one row per day, zero-filled
   by_asset: { asset_id: string; symbol: string; chain_id: string; chain_name: string; paid: number; volume_usd: string }[];
   by_status: { status: InvoiceStatus; count: number }[];
+}
+
+// One merchant's figures over the range (GET /overview/merchants); every merchant has a row.
+interface MerchantOverview {
+  merchant_id: string;
+  merchant_name: string;
+  status: "active"|"disabled";
+  invoices: number;              // created in range
+  paid_invoices: number;         // paid in range (by paid_at)
+  volume_usd: string;            // sum of amount_usd of invoices paid in range
+  conversion_rate: number;       // created in range and now paid ÷ created in range (0 when none)
+  open_invoices: number;         // currently open (pending/partial/confirming), not range-limited
+  failed_webhooks: number;       // currently failed events, not range-limited
+  last_invoice_at: string | null;  // newest invoice ever created
+  last_paid_at: string | null;     // newest paid_at ever
 }
 ```
 
@@ -271,7 +287,8 @@ interface Overview {
 | `GET /auth/sessions` | | `{ items: AdminSession[] }` (own unexpired sessions, newest first) |
 | `DELETE /auth/sessions/{id}` | | `204` (own sessions only, 404 otherwise; deleting the current session signs out and clears the cookie) |
 | `POST /auth/sessions/revoke-others` | | `{ revoked: number }` |
-| `GET /overview` | `days?` (1..365, default 30) | `Overview` |
+| `GET /overview` | `days?` (1..365, default 30), `merchant_id?` (every figure restricted to that merchant, see "Overview"; malformed → 400 `fields.merchant_id`, unknown merchant → 404) | `Overview` |
+| `GET /overview/merchants` | `days?` (as `GET /overview`), `sort?` (`volume_usd` default \| `invoices` \| `paid_invoices` \| `conversion_rate` \| `open_invoices` \| `failed_webhooks` \| `name`), `order?` (`desc` default, `asc` default for `name` \| `asc`), paging (anything else → 400 with `fields`) | `Page<MerchantOverview> & { range_days: number }` (every merchant, idle ones included; ties broken by name, then id) |
 | `GET /invoices` | `status?`, `merchant_id?`, `q?` (invoice id, order id, address or tx hash), `from?`, `to?` (RFC 3339), paging | `Page<AdminInvoice>` |
 | `POST /invoices` | `CreateInvoice & { merchant_id: string }` | `201 AdminInvoice` |
 | `GET /invoices/{id}` | | `InvoiceDetail` |
@@ -314,6 +331,33 @@ interface Overview {
 | `GET /email/outbox` | `status?`, `kind?`, paging | `Page<EmailMessage>` (newest first; owner/admin) |
 | `GET /email/outbox/{id}` | | `EmailMessage & { body_text: string }` (owner/admin) |
 | `POST /email/outbox/{id}/retry` | | `EmailMessage` (a failed or pending message is re-queued for immediate delivery, keeping its attempt count; 409 for a message that was already sent; owner/admin) |
+
+### Overview
+
+The range is the last `days` UTC calendar days including today:
+`[midnight UTC days−1 days ago, next midnight UTC)`. Every `GET /overview`
+is computed from one consistent snapshot.
+
+* *Created in range*: `totals.invoices`, `daily[].invoices`, `by_status`
+  (by current status); `conversion_rate` = of those, the ones now `paid`
+  ÷ their number (0 when there are none).
+* *Paid in range* (status `paid`, by `paid_at`): `totals.paid_invoices`,
+  `volume_usd` (sum of `amount_usd`; `null` counts as 0), `daily[].paid`,
+  `daily[].volume_usd`, `by_asset` (asset of the paid quote; invoices marked
+  paid without one are not in `by_asset`).
+* *Not range-limited* (current counts): `open_invoices`
+  (pending / partial / confirming), `unmatched_transfers` (not orphaned, no
+  invoice) and `failed_webhooks`.
+
+With `merchant_id` every figure counts only that merchant's invoices and
+webhook events; `unmatched_transfers` is then `0`, because a transfer that
+matched no invoice belongs to no merchant. `GET /overview/merchants` uses
+exactly these definitions per merchant, so a row equals the `totals` of
+`GET /overview?merchant_id=` for the same `days`, and the rows of all
+merchants add up to the unfiltered `totals` (except `unmatched_transfers`).
+`last_invoice_at` / `last_paid_at` are not range-limited either (`null`
+when the merchant never had an invoice / a payment), so idle merchants are
+easy to spot. Both endpoints are reads: any role, no audit entries.
 
 ### Receiving wallets
 

@@ -85,7 +85,7 @@ function MerchantForm({ onCancel, onCreated }: { onCancel: () => void; onCreated
   const create = useAdminMutation({
     mutationFn: (v: { name: string; webhook_url: string }) =>
       adminApi.createMerchant({ name: v.name.trim(), ...(v.webhook_url.trim() ? { webhook_url: v.webhook_url.trim() } : {}) }),
-    invalidate: [adminKeys.merchants.all],
+    invalidate: [adminKeys.merchants.all, adminKeys.overview.all], // a new row in the overview's merchant comparison
     successMessage: t("admin.merchants.createDialog.created"),
     toastError: false,
     onSuccess: (r) => onCreated(r),

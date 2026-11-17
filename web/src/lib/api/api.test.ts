@@ -172,6 +172,21 @@ describe("endpoint modules", () => {
     expect(calls[7].headers["X-Requested-With"]).toBe("cryptopay");
   });
 
+  it("admin: overview, filtered by merchant, and the per-merchant comparison", async () => {
+    const { calls, client } = recorder();
+    const api = createAdminApi(client);
+    await api.getOverview({ days: 7 });
+    await api.getOverview({ days: 30, merchant_id: "m 1" });
+    await api.listMerchantOverviews();
+    await api.listMerchantOverviews({ days: 90, sort: "conversion_rate", order: "asc", page: 2, page_size: 50 });
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      "GET /api/admin/overview?days=7",
+      "GET /api/admin/overview?days=30&merchant_id=m+1",
+      "GET /api/admin/overview/merchants",
+      "GET /api/admin/overview/merchants?days=90&sort=conversion_rate&order=asc&page=2&page_size=50",
+    ]);
+  });
+
   it("admin: two-factor, sessions and e-mail endpoints", async () => {
     const { calls, client } = recorder();
     const api = createAdminApi(client);

@@ -333,4 +333,73 @@ describe("admin mock: two-factor authentication, sessions, e-mail", () => {
     }
     expect(status).toBe(429);
   });
+
+  it("filters the overview by merchant and compares merchants with the same definitions", async () => {
+    const { cookie } = await login("viewer@cryptopay.test", "viewer-pass-123");
+    const get = async (path) => {
+      const res = await fetch(`${BASE}/api/admin${path}`, { headers: { cookie } });
+      return { status: res.status, body: await res.json() };
+    };
+    const units = (s) => {
+      const [i, f = ""] = s.split(".");
+      return BigInt(i + f.padEnd(8, "0").slice(0, 8));
+    };
+    const merchants = (await get("/merchants?page_size=100")).body.items;
+
+    // The mock's clock moves (confirmations, webhook deliveries): compare a
+    // snapshot only when the rows did not change while it was taken.
+    let checked = false;
+    for (let attempt = 0; attempt < 5 && !checked; attempt++) {
+      const before = (await get("/overview/merchants?days=90&page_size=100")).body;
+      const all = (await get("/overview?days=90")).body;
+      const filtered = [];
+      for (const r of before.items) filtered.push((await get(`/overview?days=90&merchant_id=${r.merchant_id}`)).body);
+      const after = (await get("/overview/merchants?days=90&page_size=100")).body;
+      const again = (await get("/overview?days=90")).body;
+      if (JSON.stringify(before) !== JSON.stringify(after) || JSON.stringify(all.totals) !== JSON.stringify(again.totals)) continue;
+
+      expect(before.range_days).toBe(90);
+      expect(before.total).toBe(merchants.length);
+      expect(all.merchant_id).toBeNull();
+      // Every merchant has a row; the closed store is idle.
+      expect(before.items.find((r) => r.merchant_name === "Old Storefront (closed)")).toMatchObject({
+        status: "disabled", invoices: 0, paid_invoices: 0, volume_usd: "0", conversion_rate: 0, last_invoice_at: null, last_paid_at: null,
+      });
+      // A row is exactly the merchant's filtered overview…
+      before.items.forEach((r, i) => {
+        expect(filtered[i].merchant_id).toBe(r.merchant_id);
+        expect(filtered[i].totals).toEqual({
+          invoices: r.invoices, paid_invoices: r.paid_invoices, open_invoices: r.open_invoices, volume_usd: r.volume_usd,
+          conversion_rate: r.conversion_rate, unmatched_transfers: 0, failed_webhooks: r.failed_webhooks,
+        });
+      });
+      // …and the rows add up to the unfiltered overview (except unmatched transfers).
+      for (const k of ["invoices", "paid_invoices", "open_invoices", "failed_webhooks"]) {
+        expect(before.items.reduce((n, r) => n + r[k], 0)).toBe(all.totals[k]);
+      }
+      expect(before.items.reduce((n, r) => n + units(r.volume_usd), 0n)).toBe(units(all.totals.volume_usd));
+      expect(all.totals.unmatched_transfers).toBeGreaterThan(0);
+      expect(filtered.reduce((n, o) => n + o.daily.reduce((m, d) => m + d.invoices, 0), 0)).toBe(all.totals.invoices);
+      checked = true;
+    }
+    expect(checked).toBe(true);
+
+    // Sorting (volume numerically, names A→Z by default) and paging.
+    const asc = (await get("/overview/merchants?days=90&sort=volume_usd&order=asc&page_size=100")).body.items.map((r) => units(r.volume_usd));
+    expect(asc).toEqual([...asc].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
+    const names = (await get("/overview/merchants?sort=name&page_size=100")).body.items.map((r) => r.merchant_name);
+    expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b)));
+    const page2 = (await get("/overview/merchants?sort=name&page=2&page_size=2")).body;
+    expect(page2).toMatchObject({ page: 2, page_size: 2, total: merchants.length, range_days: 30 });
+    expect(page2.items.map((r) => r.merchant_name)).toEqual(names.slice(2, 4));
+
+    // Validation.
+    const badId = await get("/overview?merchant_id=nope");
+    expect(badId.status).toBe(400);
+    expect(badId.body.error.fields).toHaveProperty("merchant_id");
+    expect((await get("/overview?merchant_id=00000000-0000-4000-8000-000000000000")).status).toBe(404);
+    expect((await get("/overview/merchants?sort=created_at")).body.error.fields).toHaveProperty("sort");
+    expect((await get("/overview/merchants?order=up")).body.error.fields).toHaveProperty("order");
+    expect((await get("/overview/merchants?days=0")).status).toBe(400);
+  });
 });

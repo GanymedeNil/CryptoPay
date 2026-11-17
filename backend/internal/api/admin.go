@@ -69,6 +69,7 @@ func (a *API) adminRoutes(r chi.Router) {
 				r.Use(a.requireWriteForMutations)
 
 				r.Get("/overview", a.adminOverview)
+				r.Get("/overview/merchants", a.adminOverviewMerchants)
 
 				r.Get("/invoices", a.adminListInvoices)
 				r.Post("/invoices", a.adminCreateInvoice)

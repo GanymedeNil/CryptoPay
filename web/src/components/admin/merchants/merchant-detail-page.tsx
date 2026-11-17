@@ -39,6 +39,7 @@ import { ErrorState } from "../states";
 import { MerchantStatusBadge, StatusBadge } from "../status-badge";
 import { RelativeTime } from "../time";
 import { IntegrationSnippet } from "./integration-snippet";
+import { MerchantOverviewSection } from "./merchant-overview";
 import { MerchantWallets } from "./merchant-wallets";
 
 export function MerchantDetailPage({ id }: { id: string }) {
@@ -92,6 +93,7 @@ export function MerchantDetailPage({ id }: { id: string }) {
           </>
         }
       />
+      <MerchantOverviewSection merchantId={m.id} className="mb-4" />
       <div className="grid gap-4 xl:grid-cols-2">
         <ProfileForm key={m.updated_at} merchant={m} />
         <WebhookSecret merchant={m} />
@@ -139,7 +141,8 @@ function ProfileForm({ merchant: m }: { merchant: Merchant }) {
   const errors = form.formState.errors;
   const save = useAdminMutation({
     mutationFn: (patch: UpdateMerchantRequest) => adminApi.updateMerchant(m.id, patch),
-    invalidate: [adminKeys.merchants.all],
+    // Name and status also show in the overview's merchant comparison.
+    invalidate: [adminKeys.merchants.all, adminKeys.overview.all],
     successMessage: t("admin.merchant.saved"),
     toastError: false,
     onError: (e) => {

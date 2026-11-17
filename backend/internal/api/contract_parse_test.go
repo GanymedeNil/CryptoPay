@@ -385,12 +385,24 @@ func (d *contractDoc) fieldsOf(name string) ([]tsField, bool) {
 	return append(out, it.Fields...), true
 }
 
+// pageFields are the members of `Page<T>` (docs/api.md conventions).
+func pageFields(elem *tsType) []tsField {
+	return []tsField{
+		{Name: "items", Type: &tsType{kind: "array", elem: elem}},
+		{Name: "total", Type: &tsType{kind: "prim", name: "number"}},
+		{Name: "page", Type: &tsType{kind: "prim", name: "number"}},
+		{Name: "page_size", Type: &tsType{kind: "prim", name: "number"}},
+	}
+}
+
 // objectFields returns the members of an object type expression (an inline
-// object or a reference to an interface / object alias).
+// object, `Page<T>` or a reference to an interface / object alias).
 func (d *contractDoc) objectFields(t *tsType) ([]tsField, bool) {
 	switch t.kind {
 	case "object":
 		return t.fields, true
+	case "page":
+		return pageFields(t.elem), true
 	case "ref":
 		if a, ok := d.aliases[t.name]; ok {
 			return d.objectFields(a)
@@ -483,12 +495,7 @@ func (d *contractDoc) check(path string, v any, t *tsType) []string {
 		}
 		return errs
 	case "page":
-		return d.check(path, v, &tsType{kind: "object", fields: []tsField{
-			{Name: "items", Type: &tsType{kind: "array", elem: t.elem}},
-			{Name: "total", Type: &tsType{kind: "prim", name: "number"}},
-			{Name: "page", Type: &tsType{kind: "prim", name: "number"}},
-			{Name: "page_size", Type: &tsType{kind: "prim", name: "number"}},
-		}})
+		return d.checkObject(path, v, pageFields(t.elem))
 	case "object":
 		return d.checkObject(path, v, t.fields)
 	case "ref":
@@ -559,14 +566,22 @@ func TestContractDocParses(t *testing.T) {
 	doc := loadContract(t)
 	for _, name := range []string{"Invoice", "Quote", "Transfer", "AssetInfo", "CreateInvoice", "CheckoutView",
 		"CheckoutAsset", "AdminUser", "Merchant", "ApiKey", "Wallet", "MerchantWallet", "Chain", "Asset", "InvoiceDetail",
-		"AdminInvoice", "WebhookEvent", "AuditLog", "Settings", "Overview", "LoginChallenge", "AdminSession", "EmailMessage"} {
+		"AdminInvoice", "WebhookEvent", "AuditLog", "Settings", "Overview", "MerchantOverview", "LoginChallenge", "AdminSession",
+		"EmailMessage"} {
 		_, ok := doc.fieldsOf(name)
 		require.True(t, ok, "interface %s", name)
 	}
 	require.Contains(t, doc.aliases, "InvoiceStatus")
-	require.Len(t, doc.routes, 5+2+55, "every endpoint row is parsed")
+	require.Len(t, doc.routes, 5+2+56, "every endpoint row is parsed")
 	require.Equal(t, "intersection", doc.routes["GET /api/admin/auth/me"].Type.kind)
 	require.Equal(t, "intersection", doc.routes["GET /api/admin/email/outbox/{id}"].Type.kind)
+	mo := doc.routes["GET /api/admin/overview/merchants"].Type
+	require.Equal(t, "intersection", mo.kind)
+	require.Equal(t, "page", mo.alts[0].kind)
+	paged := map[string]any{"items": []any{}, "total": float64(0), "page": float64(1), "page_size": float64(20)}
+	require.Len(t, doc.check("$", paged, mo), 1, "missing intersection member next to Page<T>")
+	paged["range_days"] = float64(30)
+	require.Empty(t, doc.check("$", paged, mo))
 	r := doc.routes["POST /api/admin/merchants"]
 	require.Equal(t, 201, r.Status)
 	require.Equal(t, "object", r.Type.kind)

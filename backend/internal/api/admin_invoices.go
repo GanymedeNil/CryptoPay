@@ -15,16 +15,50 @@ import (
 func (a *API) adminOverview(w http.ResponseWriter, r *http.Request) {
 	q := newQuery(r)
 	days := q.intIn("days", store.DefaultOverviewDays, 1, store.MaxOverviewDays)
+	merchantID := q.uuid("merchant_id")
 	if err := q.err(); err != nil {
 		a.fail(w, r, err)
 		return
 	}
-	o, err := a.store.Overview(r.Context(), days, a.now())
+	o, err := a.store.OverviewFor(r.Context(), merchantID, days, a.now())
+	if errors.Is(err, store.ErrNotFound) {
+		a.fail(w, r, errNotFound("unknown merchant"))
+		return
+	}
 	if err != nil {
 		a.fail(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, newOverviewJSON(o))
+}
+
+// adminOverviewMerchants is the per-merchant comparison: one row per
+// merchant with the figures of GET /overview?merchant_id= (docs/api.md).
+func (a *API) adminOverviewMerchants(w http.ResponseWriter, r *http.Request) {
+	q := newQuery(r)
+	sorts := make([]string, 0, len(store.MerchantOverviewSorts))
+	for _, s := range store.MerchantOverviewSorts {
+		sorts = append(sorts, string(s))
+	}
+	f := store.MerchantOverviewFilter{
+		Days:  q.intIn("days", store.DefaultOverviewDays, 1, store.MaxOverviewDays),
+		Sort:  store.MerchantOverviewSort(q.oneOf("sort", sorts...)),
+		Order: q.oneOf("order", store.OrderAsc, store.OrderDesc),
+	}
+	f.Page, f.PageSize = q.page()
+	if err := q.err(); err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	l, err := a.store.ListMerchantOverviews(r.Context(), f, a.now())
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, merchantOverviewPageJSON{
+		pageJSON:  mapPage(l.Rows, newMerchantOverviewJSON),
+		RangeDays: l.RangeDays,
+	})
 }
 
 // ---- invoices ----

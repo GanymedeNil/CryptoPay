@@ -106,11 +106,11 @@ func TestOpenAndMigrate(t *testing.T) {
 
 	applied, err := Migrate(ctx, pool)
 	require.NoError(t, err)
-	assert.Equal(t, []int64{1, 2, 3, 4}, applied)
+	assert.Equal(t, []int64{1, 2, 3, 4, 5}, applied)
 
 	v, err = Version(ctx, pool)
 	require.NoError(t, err)
-	assert.EqualValues(t, 4, v)
+	assert.EqualValues(t, 5, v)
 	pending, err = HasPending(ctx, pool)
 	require.NoError(t, err)
 	assert.False(t, pending)
@@ -160,14 +160,14 @@ func TestMigrateConcurrent(t *testing.T) {
 	defer pool.Close()
 	v, err := Version(ctx, pool)
 	require.NoError(t, err)
-	assert.EqualValues(t, 4, v)
+	assert.EqualValues(t, 5, v)
 }
 
 func TestMigrateURL(t *testing.T) {
 	u := testSchemaURL(t)
 	applied, err := MigrateURL(context.Background(), u, WithoutLock())
 	require.NoError(t, err)
-	assert.Len(t, applied, 4)
+	assert.Len(t, applied, 5)
 }
 
 func TestLockIDStable(t *testing.T) {

@@ -256,11 +256,12 @@ func newAuditLogJSON(l domain.AuditLog) auditLogJSON {
 }
 
 type overviewJSON struct {
-	RangeDays int                `json:"range_days"`
-	Totals    overviewTotalsJSON `json:"totals"`
-	Daily     []dailyJSON        `json:"daily"`
-	ByAsset   []byAssetJSON      `json:"by_asset"`
-	ByStatus  []byStatusJSON     `json:"by_status"`
+	RangeDays  int                `json:"range_days"`
+	MerchantID *string            `json:"merchant_id"`
+	Totals     overviewTotalsJSON `json:"totals"`
+	Daily      []dailyJSON        `json:"daily"`
+	ByAsset    []byAssetJSON      `json:"by_asset"`
+	ByStatus   []byStatusJSON     `json:"by_status"`
 }
 
 type overviewTotalsJSON struct {
@@ -313,7 +314,39 @@ func newOverviewJSON(o store.Overview) overviewJSON {
 			return byStatusJSON{Status: string(s.Status), Count: s.Count}
 		}),
 	}
+	if o.MerchantID != nil {
+		id := o.MerchantID.String()
+		out.MerchantID = &id
+	}
 	return out
+}
+
+// merchantOverviewJSON is `MerchantOverview` (GET /overview/merchants).
+type merchantOverviewJSON struct {
+	MerchantID     string     `json:"merchant_id"`
+	MerchantName   string     `json:"merchant_name"`
+	Status         string     `json:"status"`
+	Invoices       int        `json:"invoices"`
+	PaidInvoices   int        `json:"paid_invoices"`
+	VolumeUSD      string     `json:"volume_usd"`
+	ConversionRate float64    `json:"conversion_rate"`
+	OpenInvoices   int        `json:"open_invoices"`
+	FailedWebhooks int        `json:"failed_webhooks"`
+	LastInvoiceAt  *time.Time `json:"last_invoice_at"`
+	LastPaidAt     *time.Time `json:"last_paid_at"`
+}
+
+func newMerchantOverviewJSON(m store.MerchantOverview) merchantOverviewJSON {
+	return merchantOverviewJSON{MerchantID: m.MerchantID.String(), MerchantName: m.MerchantName, Status: string(m.Status),
+		Invoices: m.Invoices, PaidInvoices: m.PaidInvoices, VolumeUSD: m.VolumeUSD.String(), ConversionRate: m.ConversionRate,
+		OpenInvoices: m.OpenInvoices, FailedWebhooks: m.FailedWebhooks,
+		LastInvoiceAt: utcPtr(m.LastInvoiceAt), LastPaidAt: utcPtr(m.LastPaidAt)}
+}
+
+// merchantOverviewPageJSON is `Page<MerchantOverview> & { range_days: number }`.
+type merchantOverviewPageJSON struct {
+	pageJSON[merchantOverviewJSON]
+	RangeDays int `json:"range_days"`
 }
 
 func utcPtr(t *time.Time) *time.Time {

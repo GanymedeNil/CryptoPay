@@ -204,6 +204,7 @@ func TestAdminRoleMatrix(t *testing.T) {
 		want   want
 	}{
 		{"read overview", http.MethodGet, fixed("/overview"), nil, want{200, 200, 200}},
+		{"read merchant overviews", http.MethodGet, fixed("/overview/merchants"), nil, want{200, 200, 200}},
 		{"read invoices", http.MethodGet, fixed("/invoices"), nil, want{200, 200, 200}},
 		{"read chains", http.MethodGet, fixed("/chains"), nil, want{200, 200, 200}},
 		{"read settings", http.MethodGet, fixed("/settings"), nil, want{200, 200, 200}},

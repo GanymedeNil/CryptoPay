@@ -7,6 +7,7 @@ import { formatDay, formatShortDate } from "@/lib/format/relative";
 import { formatCount, plotValue } from "@/lib/format/units";
 import type { Overview } from "@/lib/api/types";
 import { useLocale, useT } from "@/lib/i18n";
+import { cn } from "@/lib/utils";
 import { formatUsd } from "../amount";
 
 interface Row {
@@ -19,8 +20,11 @@ interface Row {
   paid: number;
 }
 
-/** Bars: paid volume (USD); lines: invoices created and paid per day. */
-export function VolumeChart({ daily }: { daily: Overview["daily"] }) {
+/**
+ * Bars: paid volume (USD); lines: invoices created and paid per day.
+ * `compact`: a short chart without legend and count axis (merchant page).
+ */
+export function VolumeChart({ daily, compact = false }: { daily: Overview["daily"]; compact?: boolean }) {
   const t = useT();
   const { locale } = useLocale();
   const config = useMemo<ChartConfig>(
@@ -48,9 +52,11 @@ export function VolumeChart({ daily }: { daily: Overview["daily"] }) {
   return (
     <div>
       {empty ? (
-        <p className="flex h-56 items-center justify-center text-sm text-muted-foreground">{t("admin.overview.chart.empty")}</p>
+        <p className={cn("flex items-center justify-center text-sm text-muted-foreground", compact ? "h-36" : "h-56")}>
+          {t("admin.overview.chart.empty")}
+        </p>
       ) : (
-        <ChartContainer config={config} className="aspect-auto h-64 w-full sm:h-72" aria-hidden>
+        <ChartContainer config={config} className={cn("aspect-auto w-full", compact ? "h-36" : "h-64 sm:h-72")} aria-hidden>
           <ComposedChart data={rows} margin={{ top: 8, right: 4, bottom: 0, left: 0 }}>
             <CartesianGrid vertical={false} strokeDasharray="3 3" />
             <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={8} minTickGap={24} />
@@ -58,10 +64,10 @@ export function VolumeChart({ daily }: { daily: Overview["daily"] }) {
               yAxisId="usd"
               tickLine={false}
               axisLine={false}
-              width={56}
+              width={compact ? 48 : 56}
               tickFormatter={(v: number) => compactUsd(v, locale)}
             />
-            <YAxis yAxisId="count" orientation="right" tickLine={false} axisLine={false} width={32} allowDecimals={false} />
+            <YAxis yAxisId="count" orientation="right" tickLine={false} axisLine={false} width={32} allowDecimals={false} hide={compact} />
             <ChartTooltip
               cursor={{ fill: "var(--muted)", opacity: 0.6 }}
               content={({ active, payload }) => {
@@ -77,7 +83,7 @@ export function VolumeChart({ daily }: { daily: Overview["daily"] }) {
                 );
               }}
             />
-            <ChartLegend content={<ChartLegendContent />} />
+            {!compact && <ChartLegend content={<ChartLegendContent />} />}
             <Bar yAxisId="usd" dataKey="volume" fill="var(--color-volume)" radius={[3, 3, 0, 0]} maxBarSize={28} />
             <Line yAxisId="count" dataKey="invoices" type="monotone" stroke="var(--color-invoices)" strokeWidth={2} dot={false} />
             <Line yAxisId="count" dataKey="paid" type="monotone" stroke="var(--color-paid)" strokeWidth={2} dot={false} />

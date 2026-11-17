@@ -1,32 +1,47 @@
 "use client";
 
-import { ArrowRightIcon, CircleCheckIcon, InfoIcon, TriangleAlertIcon, WebhookIcon } from "lucide-react";
+import { ArrowRightIcon, CircleCheckIcon, InfoIcon, StoreIcon, TriangleAlertIcon, WebhookIcon, XIcon } from "lucide-react";
 import Link from "next/link";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { useOverview } from "@/lib/admin/queries";
+import { failedWebhooksHref, invoicesHref, MERCHANT_PARAM, rangeParam } from "@/lib/admin/merchant-overview";
+import { useAllMerchants, useMerchant, useOverview } from "@/lib/admin/queries";
 import { useUrlState } from "@/lib/admin/url-state";
+import { shortenAddress } from "@/lib/format/address";
 import { compareDecimal, isDecimalString } from "@/lib/format/amount";
 import { formatCount, formatPercent, plotValue } from "@/lib/format/units";
-import type { InvoiceStatus, Overview } from "@/lib/api/types";
+import type { InvoiceStatus, Merchant, Overview } from "@/lib/api/types";
 import { useLocale, useT, type MessageKey } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { formatUsd } from "../amount";
 import { PageHeader, Section } from "../page-header";
 import { ErrorState } from "../states";
+import { MerchantStatusBadge } from "../status-badge";
 import { ChainHealthStrip } from "./chain-health";
+import { KpiGrid } from "./kpi-grid";
+import { MerchantComparison } from "./merchant-comparison";
+import { MerchantPicker } from "./merchant-picker";
+import { RangeToggle } from "./range-toggle";
 import { VolumeChart } from "./volume-chart";
 
-export const RANGES = [7, 30, 90] as const;
-
+/**
+ * The dashboard. `?days=` picks the range and `?merchant=<id>` restricts
+ * every figure to one merchant (chain monitoring stays system-wide); without
+ * a merchant the "by merchant" comparison is shown.
+ */
 export function OverviewPage() {
   const t = useT();
   const url = useUrlState();
-  const raw = Number(url.get("days"));
-  const days = (RANGES as readonly number[]).includes(raw) ? raw : 30;
-  const q = useOverview(days);
+  const days = rangeParam(url.params.get("days"));
+  const merchantId = url.get(MERCHANT_PARAM) || null;
+  const q = useOverview(days, merchantId);
   const data = q.data;
+  const merchants = useAllMerchants();
+  const listed = merchantId ? merchants.data?.items.find((m) => m.id === merchantId) : undefined;
+  // Only for a merchant beyond the first page of the merchant list.
+  const detail = useMerchant(merchantId ?? "", Boolean(merchantId) && merchants.isSuccess && !listed);
+  const merchant = listed ?? detail.data?.merchant;
+  const setMerchant = (id: string) => url.set({ [MERCHANT_PARAM]: id || null });
 
   return (
     <>
@@ -34,29 +49,20 @@ export function OverviewPage() {
         title={t("admin.overview.title")}
         description={t("admin.overview.description")}
         actions={
-          <ToggleGroup
-            type="single"
-            variant="outline"
-            size="sm"
-            spacing={0}
-            value={String(days)}
-            onValueChange={(v) => v && url.set({ days: v === "30" ? null : v })}
-            aria-label={t("admin.overview.range")}
-          >
-            {RANGES.map((d) => (
-              <ToggleGroupItem key={d} value={String(d)} className="px-3 tabular" aria-label={t("admin.overview.lastDays", { days: d })}>
-                {t("admin.overview.days", { days: d })}
-              </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
+          <>
+            <MerchantPicker value={merchantId ?? ""} onChange={setMerchant} merchants={merchants.data?.items} label={merchant?.name} />
+            <RangeToggle value={days} onChange={(d) => url.set({ days: d === 30 ? null : d })} />
+          </>
         }
       />
+
+      {merchantId && <MerchantChip id={merchantId} merchant={merchant} onClear={() => setMerchant("")} />}
 
       {q.error && !data ? (
         <ErrorState error={q.error} onRetry={() => void q.refetch()} />
       ) : (
         <div className={cn("space-y-4 transition-opacity", q.isPlaceholderData && "opacity-60")} aria-busy={q.isFetching}>
-          <Kpis data={data} />
+          <Kpis data={data} merchantId={merchantId} />
           <div className="grid gap-4 xl:grid-cols-3">
             <Section
               title={t("admin.overview.chart.title")}
@@ -66,96 +72,97 @@ export function OverviewPage() {
             >
               {data ? <VolumeChart daily={data.daily} /> : <Skeleton className="h-64 w-full" />}
             </Section>
-            <Attention data={data} />
+            <Attention data={data} merchantId={merchantId} />
           </div>
-          <ChainHealthStrip />
+          {!merchantId && <ChainHealthStrip />}
           <div className="grid gap-4 lg:grid-cols-2">
             <ByAsset data={data} />
-            <ByStatus data={data} />
+            <ByStatus data={data} merchantId={merchantId} />
           </div>
+          {merchantId ? (
+            <div className="pt-2">
+              <ChainHealthStrip systemWide />
+            </div>
+          ) : (
+            <MerchantComparison days={days} />
+          )}
         </div>
       )}
     </>
   );
 }
 
-function Kpis({ data }: { data: Overview | undefined }) {
+/** Which merchant is in view, with a one-click way back to every merchant. */
+function MerchantChip({ id, merchant, onClear }: { id: string; merchant: Merchant | undefined; onClear: () => void }) {
   const t = useT();
-  const { locale } = useLocale();
-  const tot = data?.totals;
-  const cards: { label: string; value: string | undefined; hint?: string; sub?: string; href?: string }[] = [
-    { label: t("admin.overview.kpi.volume"), value: tot && formatUsd(tot.volume_usd, locale), hint: t("admin.overview.kpi.volumeHint") },
-    { label: t("admin.overview.kpi.invoices"), value: tot && formatCount(tot.invoices, locale), href: "/admin/invoices" },
-    { label: t("admin.overview.kpi.paid"), value: tot && formatCount(tot.paid_invoices, locale), href: "/admin/invoices?status=paid" },
-    {
-      label: t("admin.overview.kpi.conversion"),
-      value: tot && formatPercent(tot.conversion_rate, locale),
-      hint: t("admin.overview.kpi.conversionHint"),
-    },
-    { label: t("admin.overview.kpi.open"), value: tot && formatCount(tot.open_invoices, locale), hint: t("admin.overview.kpi.openHint") },
-  ];
   return (
-    <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border bg-border md:grid-cols-3 xl:grid-cols-5">
-      {cards.map((c, i) => {
-        const body = (
-          <>
-            <div className="flex items-center gap-1 text-xs text-muted-foreground">
-              <span>{c.label}</span>
-              {c.hint && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button type="button" className="rounded-sm text-muted-foreground/70 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50" aria-label={c.hint}>
-                      <InfoIcon className="size-3.5" aria-hidden />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-56">{c.hint}</TooltipContent>
-                </Tooltip>
-              )}
-            </div>
-            {c.value === undefined ? (
-              <Skeleton className="mt-2 h-7 w-24" />
-            ) : (
-              <div className="mt-1.5 font-heading text-[1.6rem] leading-none font-semibold tracking-tight tabular">{c.value}</div>
-            )}
-          </>
-        );
-        return (
-          <div key={i} className={cn("bg-card px-4 py-3.5", i === 0 && "col-span-2 xl:col-span-1")}>
-            {c.href ? (
-              <Link href={c.href} className="block rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50 [&:hover_div:last-child]:text-primary">
-                {body}
-              </Link>
-            ) : (
-              body
-            )}
-          </div>
-        );
-      })}
+    <div
+      className="mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-primary/30 bg-primary/5 py-1.5 pr-1.5 pl-3 text-sm"
+      aria-live="polite"
+    >
+      <StoreIcon className="size-4 text-primary" aria-hidden />
+      <span className="text-muted-foreground">{t("admin.overview.merchantFilter.viewing")}</span>
+      <Link href={`/admin/merchants/${id}`} className="min-w-0 truncate font-medium hover:underline" title={t("admin.overview.merchantFilter.details")}>
+        {merchant?.name ?? shortenAddress(id, 8, 4)}
+      </Link>
+      {merchant && <MerchantStatusBadge status={merchant.status} />}
+      <Button variant="ghost" size="sm" className="ml-auto text-muted-foreground" onClick={onClear}>
+        <XIcon data-icon="inline-start" aria-hidden />
+        {t("admin.overview.merchantFilter.clear")}
+      </Button>
     </div>
   );
 }
 
-function Attention({ data }: { data: Overview | undefined }) {
+function Kpis({ data, merchantId }: { data: Overview | undefined; merchantId: string | null }) {
+  const t = useT();
+  const { locale } = useLocale();
+  const tot = data?.totals;
+  return (
+    <KpiGrid
+      featureFirst
+      className="xl:grid-cols-5"
+      cards={[
+        { label: t("admin.overview.kpi.volume"), value: tot && formatUsd(tot.volume_usd, locale), hint: t("admin.overview.kpi.volumeHint") },
+        { label: t("admin.overview.kpi.invoices"), value: tot && formatCount(tot.invoices, locale), href: invoicesHref(merchantId) },
+        { label: t("admin.overview.kpi.paid"), value: tot && formatCount(tot.paid_invoices, locale), href: invoicesHref(merchantId, "paid") },
+        {
+          label: t("admin.overview.kpi.conversion"),
+          value: tot && formatPercent(tot.conversion_rate, locale),
+          hint: t("admin.overview.kpi.conversionHint"),
+        },
+        { label: t("admin.overview.kpi.open"), value: tot && formatCount(tot.open_invoices, locale), hint: t("admin.overview.kpi.openHint") },
+      ]}
+    />
+  );
+}
+
+function Attention({ data, merchantId }: { data: Overview | undefined; merchantId: string | null }) {
   const t = useT();
   const { locale } = useLocale();
   const tot = data?.totals;
   const items = [
-    {
-      count: tot?.unmatched_transfers,
-      label: t("admin.overview.attention.unmatched"),
-      hint: t("admin.overview.attention.unmatchedHint"),
-      href: "/admin/transfers?matched=false",
-      icon: TriangleAlertIcon,
-    },
+    // Unmatched transfers belong to no merchant: not shown for one merchant.
+    ...(merchantId
+      ? []
+      : [
+          {
+            count: tot?.unmatched_transfers,
+            label: t("admin.overview.attention.unmatched"),
+            hint: t("admin.overview.attention.unmatchedHint"),
+            href: "/admin/transfers?matched=false",
+            icon: TriangleAlertIcon,
+          },
+        ]),
     {
       count: tot?.failed_webhooks,
       label: t("admin.overview.attention.failedWebhooks"),
       hint: t("admin.overview.attention.failedHint"),
-      href: "/admin/webhooks?status=failed",
+      href: failedWebhooksHref(merchantId),
       icon: WebhookIcon,
     },
   ];
-  const allClear = tot && tot.unmatched_transfers === 0 && tot.failed_webhooks === 0;
+  const allClear = tot && tot.failed_webhooks === 0 && (merchantId || tot.unmatched_transfers === 0);
   return (
     <Section title={t("admin.overview.attention.title")} bodyClassName="p-2">
       {!tot ? (
@@ -207,6 +214,12 @@ function Attention({ data }: { data: Overview | undefined }) {
             <li className="flex items-center gap-2 px-3 py-2 text-xs text-success">
               <CircleCheckIcon className="size-3.5" aria-hidden />
               {t("admin.overview.attention.allClear")}
+            </li>
+          )}
+          {merchantId && (
+            <li className="flex items-start gap-2 px-3 py-2 text-xs text-pretty text-muted-foreground">
+              <InfoIcon className="mt-px size-3.5 shrink-0" aria-hidden />
+              {t("admin.overview.merchantFilter.unmatchedHidden")}
             </li>
           )}
         </ul>
@@ -286,7 +299,7 @@ const STATUS_COLOR: Record<InvoiceStatus, string> = {
   cancelled: "color-mix(in oklch, var(--muted-foreground) 25%, transparent)",
 };
 
-function ByStatus({ data }: { data: Overview | undefined }) {
+function ByStatus({ data, merchantId }: { data: Overview | undefined; merchantId: string | null }) {
   const t = useT();
   const { locale } = useLocale();
   const counts = new Map(data?.by_status.map((s) => [s.status, s.count]));
@@ -313,7 +326,7 @@ function ByStatus({ data }: { data: Overview | undefined }) {
               return (
                 <li key={r.status}>
                   <Link
-                    href={`/admin/invoices?status=${r.status}`}
+                    href={invoicesHref(merchantId, r.status)}
                     className="flex items-center gap-2 rounded-md px-1.5 py-1 text-sm outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring/50"
                     aria-label={`${t("admin.overview.byStatus.viewList", { status: label })}: ${r.count}`}
                   >

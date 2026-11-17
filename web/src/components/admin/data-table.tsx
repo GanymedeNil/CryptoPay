@@ -19,6 +19,8 @@ export interface Column<T> {
   /** Applied to both the header and the cells. */
   className?: string;
   align?: "left" | "right";
+  /** `aria-sort` of a sortable column's header (put the sort button in `header`). */
+  ariaSort?: "ascending" | "descending" | "none";
 }
 
 const INTERACTIVE = "a,button,input,select,textarea,label,[role=button],[role=switch],[role=checkbox],[role=combobox],[data-row-ignore]";
@@ -137,6 +139,7 @@ export function DataTable<T>({
             {columns.map((c) => (
               <TableHead
                 key={c.id}
+                aria-sort={c.ariaSort}
                 className={cn(
                   "h-9 px-3 text-xs font-medium text-muted-foreground",
                   c.align === "right" && "text-right",

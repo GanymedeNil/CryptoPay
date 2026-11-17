@@ -154,8 +154,28 @@ func TestContractResponses(t *testing.T) {
 	c.ok("POST /api/admin/auth/2fa/disable", mfa.post("/auth/2fa/disable", map[string]any{"current_password": storetest.Password, "code": h.totp(secret)}))
 	c.fail("2fa 400 fields", mfa.post("/auth/2fa/setup", map[string]any{"current_password": "wrong"}), http.StatusBadRequest)
 
-	// ---- admin: invoices, transfers ----
+	// ---- admin: overview ----
+	_, paidQuote := h.Quoted("10", "USD", "usdt-ethereum")
+	h.Credit(paidQuote, 10_000_000, domain.TransferConfirmed) // a paid invoice: by_asset and last_paid_at are filled
 	c.ok("GET /api/admin/overview", owner.get("/overview"))
+	filtered := c.ok("GET /api/admin/overview", vc2(h).get("/overview?days=7&merchant_id="+h.Merchant.ID.String()))
+	assert.Equal(t, h.Merchant.ID.String(), filtered["merchant_id"])
+	nonEmpty(t, filtered, "by_asset")
+	idle := storetest.Merchant(t, h.Store) // a row with nulls
+	rows := c.ok("GET /api/admin/overview/merchants", vc2(h).get("/overview/merchants?sort=name&order=desc&page_size=50"))
+	nonEmpty(t, rows, "items")
+	var sawIdle, sawActive bool
+	for _, x := range rows["items"].([]any) {
+		row := x.(map[string]any)
+		sawIdle = sawIdle || (row["merchant_id"] == idle.ID.String() && row["last_invoice_at"] == nil)
+		sawActive = sawActive || (row["merchant_id"] == h.Merchant.ID.String() && row["last_paid_at"] != nil)
+	}
+	assert.True(t, sawIdle && sawActive, "both nullable shapes are checked: %v", rows["items"])
+	c.fail("overview 400 merchant_id", owner.get("/overview?merchant_id=nope"), http.StatusBadRequest)
+	c.fail("overview 404 merchant", owner.get("/overview?merchant_id=00000000-0000-4000-8000-000000000000"), http.StatusNotFound)
+	c.fail("overview merchants 400 sort", owner.get("/overview/merchants?sort=created_at"), http.StatusBadRequest)
+
+	// ---- admin: invoices, transfers ----
 	nonEmpty(t, c.ok("GET /api/admin/invoices", owner.get("/invoices")), "items")
 	c.ok("POST /api/admin/invoices", owner.post("/invoices", map[string]any{"merchant_id": h.Merchant.ID.String(), "amount": "3", "currency": "EUR"}))
 	unmatched := storetest.Transfer(t, h.Store, func(x *domain.Transfer) {

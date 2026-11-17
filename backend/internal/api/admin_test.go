@@ -609,6 +609,97 @@ func TestAdminOverviewAndAudit(t *testing.T) {
 	assert.Equal(t, 2, p.Page)
 }
 
+func TestAdminOverviewByMerchant(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	viewer := h.newAdmin(domain.RoleViewer)
+	_, q := h.Quoted("10", "USD", "usdt-ethereum")
+	h.Credit(q, 10_000_000, domain.TransferConfirmed) // paid
+	h.Create("4", "USD")                              // open
+	other, _ := h.otherMerchant()
+	storetest.Invoice(t, h.Store, other.ID, func(i *domain.Invoice) { i.CreatedAt = h.Clock.Now() })
+	idle := storetest.Merchant(t, h.Store, func(m *domain.Merchant) { m.Name = "Zz idle" })
+	storetest.Transfer(t, h.Store) // unmatched
+	audits := len(h.auditLogs(""))
+
+	// Unfiltered: merchant_id null, unmatched transfers counted.
+	var all overviewJSON
+	viewer.get("/overview").status(http.StatusOK).decode(&all)
+	assert.Nil(t, all.MerchantID)
+	assert.Equal(t, 3, all.Totals.Invoices)
+	assert.Equal(t, 1, all.Totals.UnmatchedTransfers)
+
+	// Filtered: only that merchant; unmatched transfers are not attributable.
+	var mine overviewJSON
+	viewer.get("/overview?days=7&merchant_id=" + h.Merchant.ID.String()).status(http.StatusOK).decode(&mine)
+	require.NotNil(t, mine.MerchantID)
+	assert.Equal(t, h.Merchant.ID.String(), *mine.MerchantID)
+	assert.Equal(t, 7, mine.RangeDays)
+	assert.Len(t, mine.Daily, 7)
+	assert.Equal(t, overviewTotalsJSON{Invoices: 2, PaidInvoices: 1, OpenInvoices: 1, VolumeUSD: "10", ConversionRate: 0.5}, mine.Totals)
+	require.Len(t, mine.ByAsset, 1)
+	assert.Equal(t, "usdt-ethereum", mine.ByAsset[0].AssetID)
+	var none overviewJSON
+	viewer.get("/overview?merchant_id=" + idle.ID.String()).status(http.StatusOK).decode(&none)
+	assert.Equal(t, "0", none.Totals.VolumeUSD)
+	assert.Zero(t, none.Totals.Invoices)
+	assert.Empty(t, none.ByAsset)
+
+	e := viewer.get("/overview?merchant_id=not-a-uuid").apiError(http.StatusBadRequest, CodeInvalidRequest)
+	assert.Contains(t, e.Fields, "merchant_id")
+	viewer.get("/overview?merchant_id="+uuid.NewString()).apiError(http.StatusNotFound, CodeNotFound)
+
+	// Per-merchant rows: same figures as the filtered overview, idle included.
+	var p struct {
+		pageJSON[merchantOverviewJSON]
+		RangeDays int `json:"range_days"`
+	}
+	viewer.get("/overview/merchants?days=7").status(http.StatusOK).decode(&p)
+	assert.Equal(t, 7, p.RangeDays)
+	assert.Equal(t, 3, p.Total)
+	require.Len(t, p.Items, 3)
+	first := p.Items[0] // volume desc
+	assert.Equal(t, h.Merchant.ID.String(), first.MerchantID)
+	assert.Equal(t, h.Merchant.Name, first.MerchantName)
+	assert.Equal(t, "active", first.Status)
+	assert.Equal(t, mine.Totals, overviewTotalsJSON{Invoices: first.Invoices, PaidInvoices: first.PaidInvoices,
+		OpenInvoices: first.OpenInvoices, VolumeUSD: first.VolumeUSD, ConversionRate: first.ConversionRate,
+		FailedWebhooks: first.FailedWebhooks})
+	require.NotNil(t, first.LastInvoiceAt)
+	require.NotNil(t, first.LastPaidAt)
+	assert.Equal(t, time.UTC, first.LastPaidAt.Location())
+	var idleRow merchantOverviewJSON
+	for _, r := range p.Items {
+		if r.MerchantID == idle.ID.String() {
+			idleRow = r
+		}
+	}
+	assert.Equal(t, merchantOverviewJSON{MerchantID: idle.ID.String(), MerchantName: "Zz idle", Status: "active", VolumeUSD: "0"}, idleRow)
+
+	// Sorting and paging.
+	viewer.get("/overview/merchants?sort=name&order=desc&page_size=1").status(http.StatusOK).decode(&p)
+	assert.Equal(t, 3, p.Total)
+	assert.Equal(t, 1, p.PageSize)
+	require.Len(t, p.Items, 1)
+	assert.Equal(t, "Zz idle", p.Items[0].MerchantName)
+	viewer.get("/overview/merchants?sort=name&page=3&page_size=1").status(http.StatusOK).decode(&p)
+	require.Len(t, p.Items, 1)
+	assert.Equal(t, "Zz idle", p.Items[0].MerchantName, "name sorts ascending by default")
+	viewer.get("/overview/merchants?sort=invoices&order=asc").status(http.StatusOK).decode(&p)
+	assert.Equal(t, idle.ID.String(), p.Items[0].MerchantID)
+
+	for query, field := range map[string]string{
+		"sort=created_at": "sort", "sort=VOLUME_USD": "sort", "order=up": "order", "days=0": "days", "days=366": "days",
+		"page=0": "page", "page_size=101": "page_size",
+	} {
+		e := viewer.get("/overview/merchants?"+query).apiError(http.StatusBadRequest, CodeInvalidRequest)
+		assert.Contains(t, e.Fields, field, query)
+	}
+
+	// Reads are not audited.
+	assert.Len(t, h.auditLogs(""), audits)
+}
+
 func TestRouterErrors(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)

@@ -40,6 +40,8 @@ import type {
   MarkPaidRequest,
   Merchant,
   MerchantDetail,
+  MerchantOverviewPage,
+  MerchantOverviewQuery,
   MerchantQuery,
   Overview,
   OverviewQuery,
@@ -118,9 +120,12 @@ export function createAdminApi(client: ApiClient = apiClient) {
     revokeOtherSessions: () => client.post<RevokeOtherSessionsResponse>(`${A}/auth/sessions/revoke-others`),
 
     // ---- overview --------------------------------------------------------
-    /** `GET /overview?days=` (1..365, default 30). */
+    /** `GET /overview?days=&merchant_id=` (days 1..365, default 30; 404 for an unknown merchant). */
     getOverview: (query: OverviewQuery = {}, o?: Opts) =>
       client.get<Overview>(`${A}/overview`, { ...query }, o),
+    /** `GET /overview/merchants` (one row per merchant, sorted and paged by the server). */
+    listMerchantOverviews: (query: MerchantOverviewQuery = {}, o?: Opts) =>
+      client.get<MerchantOverviewPage>(`${A}/overview/merchants`, { ...query }, o),
 
     // ---- invoices --------------------------------------------------------
     /** `GET /invoices` */

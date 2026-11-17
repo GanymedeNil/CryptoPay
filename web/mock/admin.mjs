@@ -1305,7 +1305,8 @@ export function createAdminMock(ctx) {
 
     switch (a) {
       case "overview":
-        if (method === "GET") return { body: overview(url) };
+        if (method === "GET" && !b) return { body: overview(url) };
+        if (method === "GET" && b === "merchants" && !c) return { body: merchantOverviews(url) };
         break;
       case "invoices":
         return invoicesRoute(user, ip, method, url, b, c, body);
@@ -1536,66 +1537,150 @@ export function createAdminMock(ctx) {
   }
 
   // ---- overview ----------------------------------------------------------------
+  // Definitions of docs/api.md "Overview": created in range (invoices, daily
+  // invoices, by_status, conversion), paid in range by paid_at (paid, volume,
+  // daily paid / volume, by_asset), current counts (open, unmatched, failed
+  // webhooks). `/overview/merchants` uses exactly the same helper per merchant.
 
-  function overview(url) {
+  const OPEN_STATUSES = ["pending", "partial", "confirming"];
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const MERCHANT_SORTS = ["volume_usd", "invoices", "paid_invoices", "conversion_rate", "open_invoices", "failed_webhooks", "name"];
+
+  /** `days` (1..365, default 30) → the last `days` UTC days including today: [from, to). */
+  function overviewRange(url) {
     const raw = url.searchParams.get("days");
-    const days = raw === null ? 30 : Number(raw);
-    if (!Number.isInteger(days) || days < 1 || days > 365) throw bad("days must be 1..365", { days: "must be an integer from 1 to 365" });
+    const days = raw === null || raw === "" ? 30 : Number(raw);
+    if (!Number.isInteger(days) || days < 1 || days > 365) throw bad("days must be 1..365", { days: "must be an integer between 1 and 365" });
     const end = new Date();
-    const startDay = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate()) - (days - 1) * DAY;
-    const inRange = [...invoices.values()].filter((inv) => {
+    const to = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate()) + DAY;
+    return { days, from: to - days * DAY, to };
+  }
+
+  /** Every invoice, brought up to date (status ticks, webhook events). */
+  function liveInvoices() {
+    return [...invoices.values()].map((inv) => {
       ctx.tick(inv);
       syncWebhooks(inv);
-      return Date.parse(inv.created_at) >= startDay;
+      return inv;
     });
-    const daily = new Map();
-    for (let i = 0; i < days; i++) daily.set(new Date(startDay + i * DAY).toISOString().slice(0, 10), { invoices: 0, paid: 0, vol: 0n });
-    const byAsset = new Map();
-    const byStatus = new Map();
+  }
+
+  function failedEvents() {
+    return S.webhookEvents.filter((e) => (deliver(e), e.status === "failed"));
+  }
+
+  /** Totals of `list` (and `events`) over [from, to), plus the created / paid sets. */
+  function aggregate(list, events, from, to) {
+    const inRange = (iso) => {
+      const t = Date.parse(iso);
+      return t >= from && t < to;
+    };
+    const created = list.filter((inv) => inRange(inv.created_at));
+    const paid = list.filter((inv) => inv.status === "paid" && inv.paid_at && inRange(inv.paid_at));
     let volume = 0n;
-    let paid = 0;
-    let open = 0;
-    for (const inv of inRange) {
-      const day = inv.created_at.slice(0, 10);
-      const row = daily.get(day);
-      if (row) row.invoices += 1;
-      byStatus.set(inv.status, (byStatus.get(inv.status) ?? 0) + 1);
-      if (["pending", "partial", "confirming"].includes(inv.status)) open += 1;
-      if (inv.status === "paid") {
-        paid += 1;
-        const usd = amountUsd(inv) ?? "0";
-        const v = toScaled(usd);
-        volume += v;
-        const paidDay = (inv.paid_at ?? inv.created_at).slice(0, 10);
-        const prow = daily.get(paidDay) ?? row;
-        if (prow) {
-          prow.paid += 1;
-          prow.vol += v;
-        }
-        if (inv.quote) {
-          const k = inv.quote.asset_id;
-          const cur = byAsset.get(k) ?? { asset_id: k, symbol: inv.quote.symbol, chain_id: inv.quote.chain_id, chain_name: inv.quote.chain_name, paid: 0, vol: 0n };
-          cur.paid += 1;
-          cur.vol += v;
-          byAsset.set(k, cur);
-        }
+    for (const inv of paid) volume += toScaled(amountUsd(inv) ?? "0");
+    const createdPaid = created.filter((inv) => inv.status === "paid").length;
+    return {
+      created,
+      paid,
+      totals: {
+        invoices: created.length,
+        paid_invoices: paid.length,
+        open_invoices: list.filter((inv) => OPEN_STATUSES.includes(inv.status)).length,
+        volume_usd: fromScaled(volume),
+        conversion_rate: created.length ? createdPaid / created.length : 0,
+        failed_webhooks: events.length,
+      },
+    };
+  }
+
+  function overview(url) {
+    const { days, from, to } = overviewRange(url);
+    const merchantId = url.searchParams.get("merchant_id") || null;
+    if (merchantId !== null && !UUID_RE.test(merchantId)) throw bad("merchant_id must be a UUID", { merchant_id: "must be a UUID" });
+    if (merchantId !== null && !S.merchants.some((m) => m.id === merchantId)) throw notFound("merchant");
+    const mine = (x) => merchantId === null || x.merchant_id === merchantId;
+    const { created, paid, totals } = aggregate(liveInvoices().filter(mine), failedEvents().filter(mine), from, to);
+
+    const daily = new Map();
+    for (let i = 0; i < days; i++) daily.set(new Date(from + i * DAY).toISOString().slice(0, 10), { invoices: 0, paid: 0, vol: 0n });
+    const byStatus = new Map(["pending", "partial", "confirming", "paid", "underpaid", "expired", "cancelled"].map((st) => [st, 0]));
+    for (const inv of created) {
+      daily.get(inv.created_at.slice(0, 10)).invoices += 1;
+      byStatus.set(inv.status, byStatus.get(inv.status) + 1);
+    }
+    const byAsset = new Map();
+    for (const inv of paid) {
+      const v = toScaled(amountUsd(inv) ?? "0");
+      const row = daily.get(inv.paid_at.slice(0, 10));
+      row.paid += 1;
+      row.vol += v;
+      if (inv.quote) {
+        const k = inv.quote.asset_id;
+        const cur = byAsset.get(k) ?? { asset_id: k, symbol: inv.quote.symbol, chain_id: inv.quote.chain_id, chain_name: inv.quote.chain_name, paid: 0, vol: 0n };
+        cur.paid += 1;
+        cur.vol += v;
+        byAsset.set(k, cur);
       }
     }
     return {
       range_days: days,
+      merchant_id: merchantId,
       totals: {
-        invoices: inRange.length,
-        paid_invoices: paid,
-        open_invoices: open,
-        volume_usd: fromScaled(volume),
-        conversion_rate: inRange.length ? Math.round((paid / inRange.length) * 10000) / 10000 : 0,
-        unmatched_transfers: S.unmatched.filter((t) => t.invoice_id === null && t.status !== "orphaned").length,
-        failed_webhooks: S.webhookEvents.filter((e) => (deliver(e), e.status === "failed")).length,
+        invoices: totals.invoices,
+        paid_invoices: totals.paid_invoices,
+        open_invoices: totals.open_invoices,
+        volume_usd: totals.volume_usd,
+        conversion_rate: totals.conversion_rate,
+        // Unmatched transfers belong to no merchant.
+        unmatched_transfers: merchantId ? 0 : S.unmatched.filter((t) => t.invoice_id === null && t.status !== "orphaned").length,
+        failed_webhooks: totals.failed_webhooks,
       },
       daily: [...daily.entries()].map(([date, r]) => ({ date, invoices: r.invoices, paid: r.paid, volume_usd: fromScaled(r.vol) })),
-      by_asset: [...byAsset.values()].map(({ vol, ...r }) => ({ ...r, volume_usd: fromScaled(vol) })),
+      by_asset: [...byAsset.values()]
+        .sort((a, b) => (b.vol === a.vol ? b.paid - a.paid || a.asset_id.localeCompare(b.asset_id) : b.vol > a.vol ? 1 : -1))
+        .map(({ vol, ...r }) => ({ ...r, volume_usd: fromScaled(vol) })),
       by_status: [...byStatus.entries()].map(([status, count]) => ({ status, count })),
     };
+  }
+
+  /** GET /overview/merchants: one row per merchant (idle ones too), sorted and paged. */
+  function merchantOverviews(url) {
+    const { days, from, to } = overviewRange(url);
+    const sort = url.searchParams.get("sort") || "volume_usd";
+    if (!MERCHANT_SORTS.includes(sort)) throw bad("unknown sort", { sort: `must be one of ${MERCHANT_SORTS.join(", ")}` });
+    const order = url.searchParams.get("order") || (sort === "name" ? "asc" : "desc");
+    if (order !== "asc" && order !== "desc") throw bad("unknown order", { order: "must be one of asc, desc" });
+    for (const [k, max] of [["page", 1 << 30], ["page_size", 100]]) {
+      const v = url.searchParams.get(k);
+      if (v !== null && (!/^\d+$/.test(v) || Number(v) < 1 || Number(v) > max)) throw bad(`${k} out of range`, { [k]: `must be an integer between 1 and ${max}` });
+    }
+    const list = liveInvoices();
+    const events = failedEvents();
+    const newest = (values) => values.filter(Boolean).sort().at(-1) ?? null;
+    const rows = S.merchants.map((m) => {
+      const own = list.filter((inv) => inv.merchant_id === m.id);
+      const { totals } = aggregate(own, events.filter((e) => e.merchant_id === m.id), from, to);
+      return {
+        merchant_id: m.id,
+        merchant_name: m.name,
+        status: m.status,
+        ...totals,
+        last_invoice_at: newest(own.map((inv) => inv.created_at)),
+        last_paid_at: newest(own.filter((inv) => inv.status === "paid").map((inv) => inv.paid_at)),
+      };
+    });
+    const key = sort === "name" ? "merchant_name" : sort;
+    const cmp = (a, b) => {
+      const x = a[key];
+      const y = b[key];
+      if (sort === "volume_usd") return toScaled(x) === toScaled(y) ? 0 : toScaled(x) < toScaled(y) ? -1 : 1;
+      if (typeof x === "string") return x.localeCompare(y);
+      return x - y;
+    };
+    // Ties: name, then id, both ascending (as the backend).
+    rows.sort((a, b) => (order === "asc" ? cmp(a, b) : cmp(b, a)) || a.merchant_name.localeCompare(b.merchant_name) || (a.merchant_id < b.merchant_id ? -1 : a.merchant_id > b.merchant_id ? 1 : 0));
+    return { ...paginate(rows, url), range_days: days };
   }
 
   // ---- invoices ----------------------------------------------------------------
