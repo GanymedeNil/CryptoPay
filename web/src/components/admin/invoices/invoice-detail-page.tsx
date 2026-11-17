@@ -1,6 +1,17 @@
 "use client";
 
-import { BadgeCheckIcon, BanIcon, ExternalLinkIcon, RadioIcon } from "lucide-react";
+import {
+  BadgeCheckIcon,
+  BanIcon,
+  CheckIcon,
+  Clock3Icon,
+  ExternalLinkIcon,
+  HourglassIcon,
+  MinusIcon,
+  RadioIcon,
+  XIcon,
+  type LucideIcon,
+} from "lucide-react";
 import Link from "next/link";
 import { useId, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -8,7 +19,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { addressLink, safeHttpUrl, txLink } from "@/lib/admin/explorer";
 import { adminKeys, useAdminMutation, useChains, useInvoice } from "@/lib/admin/queries";
-import { buildTimeline, type TimelineEntry } from "@/lib/admin/timeline";
+import { buildTimeline, type TimelineEntry, type TimelineTone } from "@/lib/admin/timeline";
 import { formatCount } from "@/lib/format/units";
 import { adminApi } from "@/lib/api/admin";
 import type { Chain, InvoiceDetail, Quote, Transfer } from "@/lib/api/types";
@@ -400,17 +411,27 @@ function Transfers({ transfers, chains }: { transfers: Transfer[]; chains?: Chai
   );
 }
 
-const DOT: Partial<Record<TimelineEntry["kind"], string>> = {
-  paid: "bg-success ring-success/20",
-  confirmed: "bg-success ring-success/20",
-  detected: "bg-[var(--chart-5)] ring-[var(--chart-5)]/20",
-  orphaned: "bg-destructive ring-destructive/20",
-  underpaid: "bg-destructive ring-destructive/20",
-  webhookFailed: "bg-destructive ring-destructive/20",
-  cancelled: "bg-muted-foreground ring-muted-foreground/20",
-  expired: "bg-muted-foreground ring-muted-foreground/20",
-  expiresAt: "bg-card ring-border border border-dashed border-muted-foreground",
-  webhook: "bg-primary/50 ring-primary/10",
+const TONE: Record<TimelineTone, { marker: string; Icon: LucideIcon; label?: string; note?: string }> = {
+  step: { marker: "border border-border bg-muted text-muted-foreground", Icon: CheckIcon },
+  progress: {
+    marker: "border border-warning-border bg-warning-surface text-warning",
+    Icon: Clock3Icon,
+    note: "text-warning",
+  },
+  success: {
+    marker: "bg-success text-white dark:text-background",
+    Icon: CheckIcon,
+    label: "text-success",
+    note: "text-success",
+  },
+  danger: {
+    marker: "bg-destructive text-white dark:text-background",
+    Icon: XIcon,
+    label: "text-destructive",
+    note: "text-destructive",
+  },
+  ended: { marker: "border border-border bg-muted text-muted-foreground", Icon: MinusIcon },
+  future: { marker: "border border-dashed border-muted-foreground/60 bg-card text-muted-foreground", Icon: HourglassIcon },
 };
 
 function Timeline({ inv }: { inv: InvoiceDetail }) {
@@ -419,17 +440,38 @@ function Timeline({ inv }: { inv: InvoiceDetail }) {
   const label = (e: TimelineEntry) => t(`admin.invoice.timeline.${e.kind}` as MessageKey, e.vars);
   return (
     <Section title={t("admin.invoice.timeline.title")} className="h-fit" bodyClassName="max-h-[28rem] overflow-y-auto p-4">
-      <ol className="relative space-y-4 pl-5 before:absolute before:top-1.5 before:bottom-1.5 before:left-[5px] before:w-px before:bg-border">
-        {entries.map((e) => (
-          <li key={e.key} className={cn("relative", e.future && "text-muted-foreground")}>
-            <span
-              className={cn("absolute top-1.5 -left-5 size-[11px] rounded-full ring-4", DOT[e.kind] ?? "bg-primary ring-primary/15")}
-              aria-hidden
-            />
-            <p className={cn("text-sm", e.kind.startsWith("webhook") ? "font-mono text-xs leading-5" : "font-medium")}>{label(e)}</p>
-            <RelativeTime iso={e.at} className="text-xs text-muted-foreground" />
-          </li>
-        ))}
+      <ol className="relative space-y-4 pl-8 before:absolute before:top-2 before:bottom-2 before:left-[9.5px] before:w-px before:bg-border">
+        {entries.map((e) => {
+          const tone = TONE[e.tone];
+          const outcome = e.kind === "paid" || e.kind === "underpaid" || e.kind === "orphaned";
+          return (
+            <li key={e.key} className="relative" data-tone={e.tone}>
+              <span
+                className={cn("absolute top-0 -left-8 flex size-5 items-center justify-center rounded-full", tone.marker)}
+                aria-hidden
+              >
+                <tone.Icon className="size-3" strokeWidth={3} />
+              </span>
+              <p
+                className={cn(
+                  "text-sm leading-5",
+                  e.kind === "webhook" ? "font-mono text-xs" : "font-medium",
+                  e.future && "text-muted-foreground",
+                  outcome && cn("font-semibold", tone.label),
+                )}
+              >
+                <span className="sr-only">{t(`admin.invoice.timeline.tones.${e.tone}` as MessageKey)}: </span>
+                {label(e)}
+              </p>
+              {e.note && (
+                <p className={cn("text-xs font-medium", tone.note)}>
+                  {t(`admin.invoice.timeline.notes.${e.note.key}` as MessageKey, e.note.vars)}
+                </p>
+              )}
+              <RelativeTime iso={e.at} className="text-xs text-muted-foreground" />
+            </li>
+          );
+        })}
       </ol>
     </Section>
   );

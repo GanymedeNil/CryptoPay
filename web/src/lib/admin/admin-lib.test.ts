@@ -237,9 +237,47 @@ describe("invoice timeline", () => {
         },
       ],
     } as unknown as InvoiceDetail;
-    const kinds = buildTimeline(inv).map((e) => e.kind);
-    expect(kinds).toEqual(["created", "quoteSuperseded", "quote", "detected", "webhookFailed", "expiresAt"]);
-    expect(buildTimeline(inv).at(-1)?.future).toBe(true);
-    expect(buildTimeline({ ...inv, status: "paid", paid_at: "2026-11-16T07:20:00Z" }).at(-1)?.kind).toBe("paid");
+    const entries = buildTimeline(inv);
+    expect(entries.map((e) => e.kind)).toEqual(["created", "quoteSuperseded", "quote", "detected", "webhook", "expiresAt"]);
+    expect(entries.map((e) => e.tone)).toEqual(["step", "step", "step", "progress", "danger", "future"]);
+    expect(entries.at(-1)?.future).toBe(true);
+    expect(entries.find((e) => e.kind === "webhook")?.note).toEqual({ key: "webhookFailed", vars: { attempts: "3" } });
+    expect(entries.find((e) => e.kind === "detected")?.note?.key).toBe("awaitingConfirmations");
+    const paid = buildTimeline({ ...inv, status: "paid", paid_at: "2026-11-16T07:20:00Z" }).at(-1);
+    expect(paid?.kind).toBe("paid");
+    expect(paid?.tone).toBe("success");
+  });
+
+  it("gives every outcome an unambiguous tone", () => {
+    const base = {
+      id: "i-2",
+      status: "paid",
+      created_at: "2026-11-16T07:00:00Z",
+      updated_at: "2026-11-16T07:10:00Z",
+      expires_at: "2026-11-16T07:30:00Z",
+      paid_at: "2026-11-16T07:06:00Z",
+      quotes: [quote({ id: "q", created_at: "2026-11-16T07:01:00Z" })],
+      transfers: [
+        transfer({ id: "t1", status: "confirmed", detected_at: "2026-11-16T07:02:00Z", confirmed_at: "2026-11-16T07:05:00Z" }),
+        transfer({ id: "t2", status: "orphaned", detected_at: "2026-11-16T07:03:00Z" }),
+      ],
+      webhook_events: [
+        { id: "w1", event_type: "invoice.confirming", status: "delivered", attempts: 1, created_at: "2026-11-16T07:02:01Z" },
+        { id: "w2", event_type: "invoice.paid", status: "pending", attempts: 0, created_at: "2026-11-16T07:06:01Z" },
+        { id: "w3", event_type: "invoice.paid", status: "pending", attempts: 2, created_at: "2026-11-16T07:06:02Z" },
+      ],
+    } as unknown as InvoiceDetail;
+    const byKey = Object.fromEntries(buildTimeline(base).map((e) => [e.key, e]));
+    expect(byKey["t-t1"].tone).toBe("step");
+    expect(byKey["t-t1"].note).toBeUndefined();
+    expect(byKey["tc-t1"].tone).toBe("success");
+    expect(byKey["to-t2"].tone).toBe("danger");
+    expect(byKey["w-w1"]).toMatchObject({ tone: "success", note: { key: "webhookDelivered" } });
+    expect(byKey["w-w2"]).toMatchObject({ tone: "progress", note: { key: "webhookQueued" } });
+    expect(byKey["w-w3"]).toMatchObject({ tone: "progress", note: { key: "webhookRetrying", vars: { attempts: "2" } } });
+    expect(byKey.paid.tone).toBe("success");
+    expect(buildTimeline({ ...base, status: "expired", paid_at: null }).find((e) => e.kind === "expired")?.tone).toBe("ended");
+    expect(buildTimeline({ ...base, status: "underpaid", paid_at: null }).find((e) => e.kind === "underpaid")?.tone).toBe("danger");
+    expect(buildTimeline({ ...base, status: "cancelled", paid_at: null }).find((e) => e.kind === "cancelled")?.tone).toBe("ended");
   });
 });
