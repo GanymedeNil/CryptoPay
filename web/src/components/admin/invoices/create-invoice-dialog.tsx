@@ -35,7 +35,7 @@ import { CopyButton } from "../copy-button";
 import { describedBy, FormError, FormField } from "../form-field";
 
 const ANY = "__any__";
-export const CURRENCY_SUGGESTIONS = ["USD", "EUR", "CNY", "GBP", "JPY", "HKD", "USDT", "USDC", "BTC", "ETH"];
+export const CURRENCY_SUGGESTIONS = ["USD", "EUR", "CNY", "GBP", "JPY", "HKD", "USDT", "USDC", "PYUSD", "BTC", "ETH"];
 
 const optionalUrl = (t: TranslateFn) =>
   z

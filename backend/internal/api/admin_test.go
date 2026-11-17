@@ -231,19 +231,19 @@ func TestAdminAssets(t *testing.T) {
 	assert.Nil(t, byID["ltc-litecoin"]["rate_usd"], "no rate configured")
 	assert.EqualValues(t, 2, byID["usdt-tron"]["quote_precision"])
 
-	body := map[string]any{"chain_id": "ethereum", "symbol": "PYUSD", "name": "PayPal USD",
-		"contract_address": "0x6c3ea9036406852006290770bedfcaba0e23a0e8", "decimals": 6, "quote_precision": 2,
-		"rate_key": "paypal-usd", "is_stablecoin": true}
+	body := map[string]any{"chain_id": "ethereum", "symbol": "LINK", "name": "Chainlink",
+		"contract_address": "0x514910771af9ca656af840dff83e8264ecf986ca", "decimals": 18, "quote_precision": 4,
+		"rate_key": "chainlink", "is_stablecoin": false}
 	created := a.post("/assets", body).status(http.StatusCreated).object()
-	assert.Equal(t, "pyusd-ethereum", created["id"])
-	want, err := address.ParseEVM("0x6c3ea9036406852006290770bedfcaba0e23a0e8")
+	assert.Equal(t, "link-ethereum", created["id"])
+	want, err := address.ParseEVM("0x514910771af9ca656af840dff83e8264ecf986ca")
 	require.NoError(t, err)
 	assert.Equal(t, want, created["contract_address"], "EIP-55")
 	assert.NotEqual(t, strings.ToLower(want), want)
 	assert.Equal(t, true, created["enabled"])
 	assert.Nil(t, created["rate_usd"])
 	a.post("/assets", body).apiError(http.StatusConflict, CodeConflict)
-	body["symbol"] = "PYUSD2"
+	body["symbol"] = "LINK2"
 	e := a.post("/assets", body).apiError(http.StatusConflict, CodeConflict)
 	assert.Contains(t, e.Fields, "contract_address")
 
@@ -266,12 +266,12 @@ func TestAdminAssets(t *testing.T) {
 		assert.Contains(t, e.Fields, tc.field)
 	}
 
-	upd := a.patch("/assets/pyusd-ethereum", map[string]any{"enabled": false, "sort_order": 5, "name": "PYUSD", "rate_key": "tether"}).
+	upd := a.patch("/assets/link-ethereum", map[string]any{"enabled": false, "sort_order": 5, "name": "LINK", "rate_key": "tether"}).
 		status(http.StatusOK).object()
 	assert.Equal(t, false, upd["enabled"])
 	assert.EqualValues(t, 5, upd["sort_order"])
 	assert.Equal(t, "1", upd["rate_usd"])
-	a.patch("/assets/pyusd-ethereum", map[string]any{"quote_precision": 9}).apiError(http.StatusBadRequest, CodeInvalidRequest)
+	a.patch("/assets/link-ethereum", map[string]any{"quote_precision": 19}).apiError(http.StatusBadRequest, CodeInvalidRequest)
 	a.patch("/assets/nope", map[string]any{"enabled": true}).apiError(http.StatusNotFound, CodeNotFound)
 	assert.NotEmpty(t, h.auditLogs("asset.create"))
 	assert.NotEmpty(t, h.auditLogs("asset.update"))

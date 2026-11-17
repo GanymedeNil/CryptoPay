@@ -174,7 +174,7 @@ func TestMerchantPayableAssets(t *testing.T) {
 
 	p, err := s.ListPayableAssets(ctx, withOwn.ID)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"usdt-tron", "usdt-solana", "usdc-solana", "trx-tron", "sol-solana"}, assetIDs(p))
+	assert.Equal(t, []string{"usdt-tron", "usdt-solana", "usdc-solana", "pyusd-solana", "trx-tron", "sol-solana"}, assetIDs(p))
 	p, err = s.ListPayableAssets(ctx, plain.ID)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"usdt-tron", "trx-tron"}, assetIDs(p), "only chains with a default wallet")

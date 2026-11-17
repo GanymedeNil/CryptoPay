@@ -333,8 +333,10 @@ func TestLiveScanSPLTransfer(t *testing.T) {
 	for _, tc := range []struct{ chainID, symbol string }{
 		{"solana-devnet", "USDC"},
 		{"solana", "USDC"},
+		{"solana-devnet", "PYUSD"}, // Token-2022 mint
+		{"solana", "PYUSD"},
 	} {
-		t.Run(tc.chainID, func(t *testing.T) {
+		t.Run(tc.chainID+"/"+tc.symbol, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 			defer cancel()
 			c := newLiveClient(t, liveChain(t, tc.chainID))

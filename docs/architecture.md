@@ -21,10 +21,10 @@ USDC; BTC, LTC, ETH and TRX are the most used native coins.
 
 | Family | Chains | Assets |
 |---|---|---|
-| evm | Ethereum, BSC, Polygon, Arbitrum, Base (+ Sepolia) | ETH, BNB, USDT, USDC |
+| evm | Ethereum, BSC, Polygon, Arbitrum, Base (+ Sepolia) | ETH, BNB, USDT, USDC, PYUSD (Ethereum, Arbitrum) |
 | tron | Tron (+ Nile) | TRX, USDT |
 | utxo | Bitcoin, Litecoin (+ Bitcoin testnet) | BTC, LTC |
-| solana | Solana (+ Devnet) | SOL, USDT, USDC |
+| solana | Solana (+ Devnet) | SOL, USDT, USDC, PYUSD (Token-2022) |
 
 ## Repository layout
 

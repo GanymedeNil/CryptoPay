@@ -24,13 +24,14 @@
 
 | 网络 | 钱包 | 测试币来源 |
 |---|---|---|
-| Ethereum Sepolia | MetaMask（设置 → 高级 → 显示测试网络） | ETH：任一 Sepolia ETH 水龙头（Google Cloud Web3 faucet、QuickNode faucet 等）；USDC：`https://faucet.circle.com`，网络选 **Ethereum Sepolia** |
+| Ethereum Sepolia | MetaMask（设置 → 高级 → 显示测试网络） | ETH：任一 Sepolia ETH 水龙头（Google Cloud Web3 faucet、QuickNode faucet 等）；USDC：`https://faucet.circle.com`，网络选 **Ethereum Sepolia**；PYUSD：Google Cloud Web3 faucet 选 PYUSD · Sepolia |
 | Tron Nile | TronLink（切换到 Nile 测试网） | `https://nileex.io/join/getJoinPage`，领 TRX 和 USDT |
 | Bitcoin testnet3 | UniSat 或 OKX 钱包，网络选 **Testnet3** | 任一 testnet3 水龙头 |
 
 注意：
 
 - **USDC 合约必须是** `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238`（Circle 官方 Sepolia USDC），
+  Sepolia **PYUSD 合约必须是** `0xCaC524BcA292aaade2DF8A05cC58F0a65B1B3bB9`（Paxos 官方测试币），
   Nile **USDT 合约必须是** `TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf`。别的同名测试代币不会被识别。
   如果你领到的是其他合约，可以在后台「币种 → 添加代币」里加上。
 - Sepolia 转 USDC 需要少量 ETH 付 gas；Nile 转 USDT 需要 TRX 付能量费（收银台设置的 feeLimit 是 100 TRX）。
@@ -84,6 +85,10 @@
    - 十几秒内页面进入「确认中」，显示 `n / 3` 确认；
    - 约 1 分钟后变成「付款成功」，设置了 success_url 时几秒后自动跳转；
    - 接收器依次打印 `invoice.confirming`、`invoice.paid`，签名 `OK`。
+
+### A2. Sepolia PYUSD
+
+与 A 相同，收银台改选 **PYUSD · Ethereum Sepolia**。PYUSD 是标准 ERC-20，流程和预期结果与 USDC 一致。
 
 ### B. Sepolia ETH，手机扫码
 

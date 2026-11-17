@@ -93,8 +93,9 @@ func asset(id, chainID, symbol, name, contract string, decimals, precision int, 
 // canonical form of package address. RateKey is a CoinGecko coin id.
 func Assets() []domain.Asset {
 	const (
-		usdt = "tether"
-		usdc = "usd-coin"
+		usdt  = "tether"
+		usdc  = "usd-coin"
+		pyusd = "paypal-usd"
 	)
 	return []domain.Asset{
 		// Stablecoins — the bulk of real-world crypto payments.
@@ -110,6 +111,11 @@ func Assets() []domain.Asset {
 		asset("usdc-polygon", "polygon", "USDC", "USD Coin", "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", 6, 2, usdc, true, 23),
 		asset("usdc-arbitrum", "arbitrum", "USDC", "USD Coin", "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", 6, 2, usdc, true, 24),
 		asset("usdc-bsc", "bsc", "USDC", "USD Coin", "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", 18, 2, usdc, true, 25),
+		// PayPal USD, issued by Paxos. On Solana it is a Token-2022 mint
+		// (transfer-fee extension currently at 0 bps, transfer hook unset).
+		asset("pyusd-ethereum", "ethereum", "PYUSD", "PayPal USD", "0x6c3ea9036406852006290770BEdFcAbA0e23A0e8", 6, 2, pyusd, true, 26),
+		asset("pyusd-solana", "solana", "PYUSD", "PayPal USD", "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo", 6, 2, pyusd, true, 27),
+		asset("pyusd-arbitrum", "arbitrum", "PYUSD", "PayPal USD", "0x46850aD61C2B7d64d08c9C754F45254596696984", 6, 2, pyusd, true, 28),
 
 		// Native coins.
 		asset("btc-bitcoin", "bitcoin", "BTC", "Bitcoin", "", 8, 8, "bitcoin", false, 30),
@@ -129,5 +135,7 @@ func Assets() []domain.Asset {
 		asset("btc-bitcoin-testnet", "bitcoin-testnet", "BTC", "Bitcoin (Testnet)", "", 8, 8, "bitcoin", false, 94),
 		asset("sol-solana-devnet", "solana-devnet", "SOL", "Solana (Devnet)", "", 9, 4, "solana", false, 95),
 		asset("usdc-solana-devnet", "solana-devnet", "USDC", "USD Coin (Devnet)", "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU", 6, 2, usdc, true, 96),
+		asset("pyusd-sepolia", "sepolia", "PYUSD", "PayPal USD (Sepolia)", "0xCaC524BcA292aaade2DF8A05cC58F0a65B1B3bB9", 6, 2, pyusd, true, 97),
+		asset("pyusd-solana-devnet", "solana-devnet", "PYUSD", "PayPal USD (Devnet)", "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM", 6, 2, pyusd, true, 98),
 	}
 }

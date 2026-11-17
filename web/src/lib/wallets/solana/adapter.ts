@@ -58,7 +58,7 @@ async function tokenProgramFor(connection: SolanaConnectionLike, mint: PublicKey
     const info = await connection.getAccountInfo(mint);
     if (info?.owner.equals(TOKEN_2022_PROGRAM_ID)) return TOKEN_2022_PROGRAM_ID;
   } catch {
-    // fall back to the classic token program (USDT / USDC)
+    // fall back to the classic token program (USDT / USDC); PYUSD is Token-2022
   }
   return TOKEN_PROGRAM_ID;
 }

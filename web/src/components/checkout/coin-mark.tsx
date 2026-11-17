@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 const COINS: Record<string, { glyph: string; bg: string; fg: string }> = {
   USDT: { glyph: "₮", bg: "#26a17b", fg: "#ffffff" },
   USDC: { glyph: "$", bg: "#2775ca", fg: "#ffffff" },
+  PYUSD: { glyph: "P", bg: "#0070e0", fg: "#ffffff" },
   BTC: { glyph: "₿", bg: "#f7931a", fg: "#ffffff" },
   ETH: { glyph: "Ξ", bg: "#627eea", fg: "#ffffff" },
   TRX: { glyph: "T", bg: "#eb0029", fg: "#ffffff" },

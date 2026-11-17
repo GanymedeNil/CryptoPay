@@ -12,16 +12,16 @@ CryptoPay 是一个**自托管、非托管（non-custodial）**的加密货币�
 
 | 链族 | 网络 | 资产 | 默认确认数 |
 |---|---|---|---|
-| EVM | Ethereum | ETH, USDT, USDC | 12 |
+| EVM | Ethereum | ETH, USDT, USDC, PYUSD | 12 |
 | EVM | BNB Smart Chain | BNB, USDT, USDC | 15 |
 | EVM | Polygon | USDT, USDC | 64 |
-| EVM | Arbitrum One | ETH, USDT, USDC | 40 |
+| EVM | Arbitrum One | ETH, USDT, USDC, PYUSD | 40 |
 | EVM | Base | ETH, USDC | 20 |
 | Tron | Tron | TRX, USDT | 19 |
 | UTXO | Bitcoin | BTC | 2 |
 | UTXO | Litecoin | LTC | 6 |
-| Solana | Solana | SOL, USDT, USDC | finalized |
-| 测试网 | Sepolia · Tron Nile · Bitcoin Testnet · Solana Devnet | ETH/USDC · TRX/USDT · BTC · SOL/USDC | — |
+| Solana | Solana | SOL, USDT, USDC, PYUSD | finalized |
+| 测试网 | Sepolia · Tron Nile · Bitcoin Testnet · Solana Devnet | ETH/USDC/PYUSD · TRX/USDT · BTC · SOL/USDC/PYUSD | — |
 
 主网默认启用、测试网默认关闭；一条链只有**有收款钱包**（链的默认钱包，或某个商户自己的钱包）后才可支付。管理后台可以添加自定义代币（ERC-20 / TRC-20 / SPL）。
 
@@ -204,6 +204,7 @@ make lint           # gofmt / go vet / eslint / tsc
 
 - **EVM / Tron 原生币的内部转账不会被发现**：只识别交易顶层的 ETH/BNB/TRX 转账和 ERC-20/TRC-20 `Transfer` 事件；通过合约内部调用（部分智能合约钱包、交易所批量提现）转入的原生币检测不到，需要在后台把账单手动标记为已付。
 - **Litecoin MWEB** 隐私交易无法观察；请使用普通地址付款。
+- **Solana 上的 PYUSD 是 Token-2022 代币**：发行方 Paxos 可以开启转账手续费（目前为 0）。一旦开启，到账金额会少于顾客发出的金额，可能被判为部分支付；发行方还有永久委托权限，可以从任意账户划走 PYUSD。检测按实际到账金额计算。
 - 没有可免费使用且无需 key 的 Litecoin JSON-RPC：内置默认节点每分钟仅允许少量匿名请求，只够开发用，生产必须配置自己的 RPC。
 - **资金归集不在范围内**：每张账单的派生地址上的资金需用自己的钱包软件归集（同一钱包助记词）。
 - **固定地址钱包**靠唯一金额区分账单：金额不精确（交易所扣手续费、顾客手动改金额）的付款会进入“未匹配转账”，需要管理员手动分配；同一金额在账单关闭（宽限期结束）后会被复用。

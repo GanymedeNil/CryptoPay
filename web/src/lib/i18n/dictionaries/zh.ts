@@ -38,7 +38,7 @@ export const zh = {
     checkoutHint: "客户通过商户 API 创建的 /pay/{订单 ID} 链接付款。",
     networksTitle: "支持的网络",
     networks:
-      "Ethereum、BNB Smart Chain、Polygon、Arbitrum、Base、Tron、Bitcoin、Litecoin、Solana 上的 USDT、USDC、BTC、ETH、TRX、SOL、BNB、LTC。",
+      "Ethereum、BNB Smart Chain、Polygon、Arbitrum、Base、Tron、Bitcoin、Litecoin、Solana 上的 USDT、USDC、PYUSD、BTC、ETH、TRX、SOL、BNB、LTC。",
     docsHint: "接口文档见代码仓库中的 docs/api.md。",
   },
   checkout: {

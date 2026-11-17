@@ -31,7 +31,7 @@ export const en: Dictionary = {
     checkoutHint: "Customers pay on /pay/{invoice id} links created through the merchant API.",
     networksTitle: "Networks",
     networks:
-      "USDT, USDC, BTC, ETH, TRX, SOL, BNB and LTC on Ethereum, BNB Smart Chain, Polygon, Arbitrum, Base, Tron, Bitcoin, Litecoin and Solana.",
+      "USDT, USDC, PYUSD, BTC, ETH, TRX, SOL, BNB and LTC on Ethereum, BNB Smart Chain, Polygon, Arbitrum, Base, Tron, Bitcoin, Litecoin and Solana.",
     docsHint: "The HTTP API is documented in docs/api.md in the repository.",
   },
   checkout: {

@@ -76,7 +76,7 @@ func TestPayableAssets(t *testing.T) {
 
 	p, err = s.ListPayableAssets(ctx, m.ID)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"usdt-tron", "usdt-solana", "usdc-solana", "trx-tron"}, assetIDs(p))
+	assert.Equal(t, []string{"usdt-tron", "usdt-solana", "usdc-solana", "pyusd-solana", "trx-tron"}, assetIDs(p))
 
 	_, err = s.GetPayableAsset(ctx, m.ID, "usdt-tron")
 	require.NoError(t, err)
