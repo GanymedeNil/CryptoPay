@@ -3,7 +3,7 @@
 COMPOSE      ?= docker compose
 COMPOSE_TEST ?= docker compose -f docker-compose.test.yml
 
-.PHONY: help up down logs ps build seed-dev test test-backend test-web test-live lint clean
+.PHONY: help up down logs ps build seed-dev test test-backend test-web test-live smoke lint clean
 
 help: ## list targets
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -32,7 +32,7 @@ seed-dev: ## demo merchant + API key + TEST-ONLY testnet wallets (refused in pro
 test: test-backend test-web ## run every test suite in Docker
 
 # `run` exits with the test command's status; the stack is removed either way.
-test-backend: ## go vet + go test -race ./... against a throw-away PostgreSQL
+test-backend: ## gofmt + go vet + go test -race ./... against a throw-away PostgreSQL
 	@$(COMPOSE_TEST) run --rm --build backend-test; status=$$?; \
 	  $(COMPOSE_TEST) down --remove-orphans >/dev/null 2>&1; exit $$status
 
@@ -43,6 +43,9 @@ test-web: ## pnpm lint && pnpm typecheck && pnpm test (vitest)
 test-live: ## chain adapters against free public RPCs (network-dependent, rate limited)
 	@$(COMPOSE_TEST) --profile live run --rm --build backend-live; status=$$?; \
 	  $(COMPOSE_TEST) --profile live down --remove-orphans >/dev/null 2>&1; exit $$status
+
+smoke: ## smoke-test the running stack (`make up` first; ADMIN_EMAIL / ADMIN_PASSWORD if .env changes them)
+	scripts/smoke.sh
 
 lint: ## gofmt + go vet (backend) and eslint + tsc (web), in Docker
 	@docker build -q --target test --build-context docs=./docs -t cryptopay-backend-test ./backend >/dev/null
