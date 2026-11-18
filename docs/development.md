@@ -30,3 +30,5 @@ To run the backend tests directly on the host: `export TEST_DATABASE_URL='postgr
 | **CI** | Succeeds only when every job above did. It is the one status check that branch protection requires, so adding a job to the workflow only means listing it in this job's `needs` |
 
 A new push to a pull request cancels that pull request's earlier run; runs on `main` are never cancelled.
+
+Releases are published by a second workflow when a version tag is pushed: see [Versions and releases](releasing.md).

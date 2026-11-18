@@ -4,7 +4,8 @@ All notable changes to CryptoPay are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While the major
 version is 0, a minor release (0.x.0) may contain breaking changes; they are
-called out under **Changed** or **Removed**.
+called out under **Changed** or **Removed**. How a release is cut:
+[docs/releasing.md](docs/releasing.md).
 
 ## [Unreleased]
 

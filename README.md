@@ -231,6 +231,7 @@ Webhooks carry an `X-CryptoPay-Signature` header, `hex(HMAC-SHA256(secret, times
 | [Architecture](docs/architecture.md) | Packages, receiving wallets, scanner, webhooks |
 | [Testnet walkthrough](docs/testnet-walkthrough.md) | Pay a real invoice on Sepolia, Tron Nile and Bitcoin testnet |
 | [Development and tests](docs/development.md) | Running the test suites in Docker |
+| [Versions and releases](docs/releasing.md) | Versioning, the changelog and how a release is cut |
 
 ## Security at a glance
 
