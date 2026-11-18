@@ -17,6 +17,9 @@
   <a href="docs/architecture.md">Architecture</a>
 </p>
 
+> [!WARNING]
+> Cryptocurrency payments are irreversible. **Test everything yourself before you accept real funds**, and read the [disclaimer](#disclaimer): the software is provided as is, and any loss of funds is your responsibility, not the author's.
+
 <p align="center">
   <img src="docs/assets/screenshots/admin-overview.png" alt="CryptoPay admin console: overview with paid volume, daily payments and chain monitoring" width="880">
 </p>
@@ -240,6 +243,17 @@ Before going live, work through the [production checklist](docs/production.md#pr
 ## Tech stack
 
 Go (HTTP API, chain scanners, webhook delivery) · Next.js 16, React 19, Tailwind CSS and shadcn/ui (checkout and console) · PostgreSQL · Docker Compose. The repository layout is described in [docs/architecture.md](docs/architecture.md); run the tests with `make test`.
+
+## Disclaimer
+
+CryptoPay is provided **"as is", without warranty of any kind**, as stated in the [MIT License](LICENSE). Payments in cryptocurrency cannot be reversed, and software that handles them can contain defects.
+
+- **You are responsible for testing.** Before you accept real funds, test your whole setup yourself: run the test suites (`make test`), then walk through your own flows on testnets and with small mainnet amounts. Check that the addresses derived from your extended public key match your wallet, that every chain and asset you enable is detected, that your server verifies webhook signatures and handles duplicates, and that partial, late and overpaid invoices end up the way you expect. Review the code you deploy, your configuration and the RPC and price providers you rely on.
+- **Any loss of funds is not the author's responsibility.** The author and contributors accept no liability for any loss or damage, including payments that are lost, misdirected, undetected, mispriced or credited twice, wrong invoice states, missed or duplicated webhooks, lost or leaked keys and secrets, outages or errors of third-party RPC, price or e-mail providers, and security incidents. This applies whether the cause is a defect in CryptoPay, your configuration or deployment, or a third party. Everything you do with this software is at your own risk.
+- **Custody stays with you.** The gateway never holds a private key, so it cannot recover, move or refund funds. Keeping the wallet seed and `APP_SECRET` safe and backed up is your job.
+- **Not advice, and not a compliance tool.** Nothing here is financial, legal or tax advice. Licensing, KYC / AML, sanctions and tax rules that apply to accepting crypto payments are your responsibility as the operator.
+
+See also the [known limitations](docs/production.md#known-limitations).
 
 ## License
 

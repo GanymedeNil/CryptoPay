@@ -8,6 +8,8 @@
 - Admin console: HttpOnly + SameSite=Lax session cookie (Secure in production), `X-Requested-With: cryptopay` required on every write (CSRF protection), sign-in rate limiting per IP + email, optional (or enforced) TOTP two-step verification with one-time recovery codes, session management, security-event emails, three roles (owner / admin / viewer), and an audit log of every change (without secrets, passwords, verification codes or full RPC URLs).
 - The invoice UUID is the access credential of the checkout: do not leak a `checkout_url` in public.
 
+> **Disclaimer.** Test your whole setup before you accept real funds. CryptoPay is provided as is, and any loss of funds is your responsibility, not the author's. See the [disclaimer in the README](../README.md#disclaimer).
+
 ## Production checklist
 
 - [ ] `APP_ENV=production`, HTTPS everywhere (TLS terminated at a reverse proxy), and a correct `checkout_base_url`
