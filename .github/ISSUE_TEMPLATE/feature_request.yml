@@ -1,0 +1,48 @@
+name: Feature request
+description: Suggest an improvement or a new capability
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem do you want to solve?
+      description: Describe the situation, not the solution. Who is affected (merchant, customer, operator) and what do they do today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should CryptoPay do? Sketch the API, the console screen or the checkout behaviour if you can.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you use today and other approaches you thought about.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Checkout page / wallet payment
+        - Invoices and payment rules
+        - Webhooks
+        - Merchant API
+        - Admin console
+        - Admin security
+        - Docker / deployment / operations
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      description: CryptoPay is non-custodial and watch-only by design. It never holds private keys, and moving or sweeping funds is out of scope (see "Known limitations" in docs/production.md).
+      options:
+        - label: This does not require the gateway to hold private keys or move funds.
+          required: true

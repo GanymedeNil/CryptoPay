@@ -33,7 +33,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # read ../docs/api.md relative to the module, i.e. /docs/api.md here.)
 FROM scratch AS docs
 
-# ---- test: vet + race tests (needs cgo/glibc for -race) ---------------------
+# ---- test: gofmt + vet + race tests (needs cgo/glibc for -race) ---------------
 # Used by docker-compose.test.yml; expects TEST_DATABASE_URL.
 FROM golang:${GO_VERSION}-trixie AS test
 WORKDIR /src
@@ -42,7 +42,8 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY --from=docs / /docs/
 COPY . .
-CMD ["sh", "-c", "go vet ./... && go test -race -count=1 ./..."]
+# gofmt -l prints the unformatted files and does not fail by itself, hence the test -z.
+CMD ["sh", "-c", "test -z \"$(gofmt -l .)\" || { echo 'gofmt: unformatted files:'; gofmt -l .; exit 1; }; go vet ./... && go test -race -count=1 ./..."]
 
 # ---- runtime: distroless, non-root ------------------------------------------
 # distroless/static ships CA certificates (RPC / CoinGecko over TLS) and tzdata.

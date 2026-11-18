@@ -32,8 +32,12 @@ services:
     build:
       context: ./backend
       target: runtime
+      # Stamped into `gateway version`; `make up` / `make build` fill these in
+      # from the VERSION file and git (plain `docker compose` builds a "dev").
       args:
         VERSION: ${CRYPTOPAY_VERSION:-dev}
+        COMMIT: ${CRYPTOPAY_COMMIT:-unknown}
+        DATE: ${CRYPTOPAY_BUILD_DATE:-unknown}
     image: cryptopay-backend:local
     restart: unless-stopped
     depends_on:

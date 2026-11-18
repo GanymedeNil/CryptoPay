@@ -1,0 +1,11 @@
+# Issues are for bugs, feature requests and chain / token requests.
+# Vulnerabilities never go to a public issue (see SECURITY.md), and the guides
+# in docs/ answer most setup questions.
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/GanymedeNil/CryptoPay/security/policy
+    about: Anything that could lose, redirect or expose customers' or merchants' funds or data. Do NOT open a public issue; see SECURITY.md.
+  - name: Ask a question or get help
+    url: https://github.com/GanymedeNil/CryptoPay/blob/main/docs/getting-started.md
+    about: Setup, configuration and integration are covered by the guides in docs/. Read them first; open a bug report if they are wrong or incomplete.

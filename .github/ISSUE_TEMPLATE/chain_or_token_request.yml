@@ -1,0 +1,58 @@
+name: Chain or token request
+description: Ask for a new blockchain, or a token that should be in the built-in catalog
+title: "chain: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A token that is only needed on your own installation does not need a request: custom ERC-20 / TRC-20 / SPL tokens can be added from the admin console. Request one here when it should ship in the built-in catalog (see "Supported coins and networks" in the README).
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What do you need?
+      options:
+        - A new blockchain
+        - A new token on a supported chain
+        - A different default for an existing chain or token (confirmations, decimals...)
+    validations:
+      required: true
+  - type: input
+    id: name
+    attributes:
+      label: Chain / token
+      description: Name, symbol and the chain it lives on.
+      placeholder: "USDC on Optimism"
+    validations:
+      required: true
+  - type: input
+    id: contract
+    attributes:
+      label: Contract / mint address
+      description: For a token. Link a block explorer page that shows the issuer's verified contract, and say where the issuer publishes it.
+  - type: dropdown
+    id: family
+    attributes:
+      label: Address and transfer model
+      description: How does the chain work? The gateway supports EVM, Tron, UTXO (Bitcoin-like) and Solana chains.
+      options:
+        - EVM-compatible
+        - Tron
+        - UTXO (Bitcoin-like)
+        - Solana / SPL
+        - Something else
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: rpc
+    attributes:
+      label: RPC and tooling
+      description: Is there a free public RPC for testing and a commercial provider for production? Is there a testnet, and a faucet?
+  - type: textarea
+    id: why
+    attributes:
+      label: Why does it belong in the catalog?
+      description: Payment volume, who pays with it, and any risks (fee-on-transfer, rebasing, freezable or upgradable contracts...).
+    validations:
+      required: true
