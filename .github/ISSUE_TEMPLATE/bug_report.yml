@@ -1,0 +1,73 @@
+name: Bug report
+description: Something does not work as documented (an invoice is not detected, a webhook is wrong, the console misbehaves...)
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. **Never paste secrets** (`APP_SECRET`, admin passwords, API keys, webhook secrets, RPC URLs that contain a key, seed phrases, private keys). CryptoPay only needs public keys and addresses, so you should never have to share a private key. If you find a security problem, do not file it here: see [SECURITY.md](https://github.com/GanymedeNil/CryptoPay/blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you see, and what did you expect to see instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence that triggers it. For payment problems include the chain, the asset, the invoice status and what the customer paid (amounts, whether it was one transfer or several).
+      placeholder: |
+        1. Create an invoice for 19.90 USD with ...
+        2. Pay with ...
+        3. See ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `docker compose exec backend /usr/local/bin/gateway version`, or the release tag / commit you run.
+      placeholder: "cryptopay gateway 0.1.0 (commit 1a2b3c4d5e6f, built ..., go1.27.3)"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Checkout page / wallet payment
+        - Invoice status or amounts
+        - Chain scanning (a transfer was missed or misread)
+        - Webhooks
+        - Merchant API
+        - Admin console
+        - Admin security (sign-in, two-step verification, sessions)
+        - Docker / deployment / configuration
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: network
+    attributes:
+      label: Chain and asset
+      description: Only for payment or scanning problems. Mention whether it is a mainnet or a testnet, and which RPC provider is configured (not the key).
+      placeholder: "Tron mainnet, USDT; RPC: TronGrid"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and screenshots
+      description: Gateway logs around the problem (`docker compose logs backend`), webhook delivery details, console errors. Remove anything secret first.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues and read the relevant guide in `docs/`.
+          required: true
+        - label: I removed every secret and private value from this report.
+          required: true
