@@ -32,3 +32,9 @@ To run the backend tests directly on the host: `export TEST_DATABASE_URL='postgr
 A new push to a pull request cancels that pull request's earlier run; runs on `main` are never cancelled.
 
 Releases are published by a second workflow when a version tag is pushed: see [Versions and releases](releasing.md).
+
+## Pull requests and branch protection
+
+`main` accepts changes **only through pull requests**: direct pushes are refused, for administrators too. A pull request can be merged when the `CI` check is green on a branch that is up to date with `main` and its review conversations are resolved. No approving review is required (a sole maintainer can merge their own pull request); force pushes to `main` and deleting it are refused.
+
+Work on a branch, keep one feature per commit, and open a pull request; the [pull request template](../.github/pull_request_template.md) lists what to check. The rules are applied by [`scripts/protect-main.sh`](../scripts/protect-main.sh) (needs `gh` signed in as a repository admin), which can be run again at any time, for example after renaming the `CI` job.
