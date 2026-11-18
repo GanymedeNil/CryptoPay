@@ -14,6 +14,8 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  # The release workflow runs the whole suite again on the tagged commit.
+  workflow_call:
 
 # A new push to a pull request supersedes the previous run; runs on main are
 # never cancelled, so every merge gets a verdict.
@@ -52,7 +54,11 @@ jobs:
       # Builds the *runtime* images (including `next build`, which the unit
       # tests do not run) and waits for their health checks.
       - name: Build and start the stack
-        run: docker compose up -d --build --wait --wait-timeout 300
+        run: |
+          CRYPTOPAY_VERSION="$(cat VERSION)" CRYPTOPAY_COMMIT="$(git rev-parse --short=12 HEAD)" \
+            docker compose up -d --build --wait --wait-timeout 300
+      - name: The gateway reports the release version
+        run: docker compose exec -T backend /usr/local/bin/gateway version | tee /dev/stderr | grep -F "gateway $(cat VERSION) (commit "
       - name: Smoke test
         run: scripts/smoke.sh
       - name: Container logs
@@ -72,6 +78,8 @@ jobs:
         run: |
           docker compose config --quiet
           docker compose -f docker-compose.test.yml --profile live config --quiet
+      - name: VERSION, web/package.json and CHANGELOG.md agree
+        run: scripts/check-version.sh
       - name: Shell scripts parse
         run: for f in scripts/*.sh; do bash -n "$f"; done
       - name: Workflows pass actionlint

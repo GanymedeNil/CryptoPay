@@ -3,7 +3,13 @@
 COMPOSE      ?= docker compose
 COMPOSE_TEST ?= docker compose -f docker-compose.test.yml
 
-.PHONY: help up down logs ps build seed-dev test test-backend test-web test-live smoke lint clean
+# The release version lives in VERSION (see docs/releasing.md). It is stamped,
+# with the commit and the build time, into the backend image: `gateway version`.
+export CRYPTOPAY_VERSION    ?= $(shell cat VERSION)
+export CRYPTOPAY_COMMIT     ?= $(shell git describe --always --dirty --abbrev=12 --exclude='*' 2>/dev/null || echo unknown)
+export CRYPTOPAY_BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
+.PHONY: help up down logs ps build seed-dev test test-backend test-web test-live smoke lint version check-version clean
 
 help: ## list targets
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -52,6 +58,12 @@ lint: ## gofmt + go vet (backend) and eslint + tsc (web), in Docker
 	docker run --rm cryptopay-backend-test sh -c 'test -z "$$(gofmt -l .)" || { gofmt -l .; exit 1; }; go vet ./...'
 	@docker build -q --target test -t cryptopay-web-test ./web >/dev/null
 	docker run --rm cryptopay-web-test sh -c 'pnpm lint && pnpm typecheck'
+
+version: ## print the release version (VERSION)
+	@echo $(CRYPTOPAY_VERSION)
+
+check-version: ## VERSION, web/package.json and CHANGELOG.md agree
+	scripts/check-version.sh
 
 clean: ## stop everything and delete the database volume (DESTROYS DATA)
 	$(COMPOSE) down -v --remove-orphans
